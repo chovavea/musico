@@ -1,0 +1,9 @@
+id = "qqmusic"
+name = "QQ音乐"
+capabilities = ["chart", "preview"]
+
+[config_schema]
+required = ["top_id"]
+
+[config_schema.types]
+top_id = "int"

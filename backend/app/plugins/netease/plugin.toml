@@ -1,0 +1,9 @@
+id = "netease"
+name = "网易云音乐"
+capabilities = ["chart", "preview"]
+
+[config_schema]
+required = ["playlist_id"]
+
+[config_schema.types]
+playlist_id = "str"

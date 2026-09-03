@@ -1,0 +1,31 @@
+{
+  "code": 0,
+  "songlist": [
+    {
+      "cur_count": "1",
+      "data": {
+        "songmid": "0039MnYb0qxYhV",
+        "songname": "晴天",
+        "albummid": "003DFRzD192KKD",
+        "singer": [{ "name": "周杰伦" }]
+      }
+    },
+    {
+      "cur_count": "2",
+      "data": {
+        "songmid": "001badid",
+        "songname": "",
+        "singer": [{ "name": "坏数据" }]
+      }
+    },
+    {
+      "cur_count": "2",
+      "data": {
+        "songmid": "000MkMni19LlJH",
+        "songname": "七里香",
+        "albummid": "003DFRzD192KKD",
+        "singer": [{ "name": "周杰伦" }]
+      }
+    }
+  ]
+}

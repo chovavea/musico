@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --cover-fade: rgb(244 244 245);
+}
+
+html.dark {
+  color-scheme: dark;
+  --cover-fade: rgb(24 24 27);
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+  min-height: 100dvh;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+body {
+  @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.skel {
+  @apply animate-pulse rounded-md bg-zinc-200 dark:bg-zinc-800;
+}
+
+.chart-sort-move {
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.chart-sort-leave-active {
+  display: none;
+}
+
+.chart-sort-row {
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.menu-popover {
+  transform-origin: top right;
+  animation: menu-popover-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes menu-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.status-glow {
+  border-radius: 9999px;
+  background: var(--status-glow);
+  box-shadow:
+    0 0 0.35rem var(--status-glow),
+    0 0 0.85rem color-mix(in srgb, var(--status-glow) 70%, transparent);
+  animation: status-glow-pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes status-glow-pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+    box-shadow:
+      0 0 0.35rem var(--status-glow),
+      0 0 0.85rem color-mix(in srgb, var(--status-glow) 65%, transparent);
+  }
+  50% {
+    filter: brightness(1.35);
+    box-shadow:
+      0 0 0.55rem var(--status-glow),
+      0 0 1.25rem color-mix(in srgb, var(--status-glow) 90%, transparent);
+  }
+}

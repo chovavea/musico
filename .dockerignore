@@ -1,0 +1,16 @@
+.git
+.tmp
+tmp
+.env
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+frontend/node_modules
+frontend/dist
+backend/*.egg-info
+实施方案.md
+*.md
+!README.md

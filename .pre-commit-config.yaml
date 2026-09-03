@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: ruff check
+        language: system
+        files: \.py$
+        pass_filenames: true
+      - id: mypy
+        name: mypy
+        language: system
+        files: \.py$
+        pass_filenames: false
+        entry: python
+        args:
+          - "-c"
+          - "import subprocess, sys; raise SystemExit(subprocess.call([sys.executable, '-m', 'mypy', 'app'], cwd='backend'))"

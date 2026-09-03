@@ -1,0 +1,23 @@
+{
+  "code": 200,
+  "playlist": {
+    "tracks": [
+      {
+        "id": 186016,
+        "name": "晴天",
+        "ar": [{ "name": "周杰伦" }],
+        "al": { "picUrl": "https://example.com/cover1.jpg" }
+      },
+      {
+        "id": null,
+        "name": "坏数据"
+      },
+      {
+        "id": 186001,
+        "name": "七里香",
+        "ar": [{ "name": "周杰伦" }],
+        "al": { "picUrl": "https://example.com/cover2.jpg" }
+      }
+    ]
+  }
+}
