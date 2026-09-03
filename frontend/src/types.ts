@@ -23,6 +23,7 @@ export interface BoardInfo {
   interval_sec: number;
   extra?: Record<string, unknown>;
   chart_key?: string | null;
+  sort_order?: number;
 }
 
 export interface CatalogChart {
