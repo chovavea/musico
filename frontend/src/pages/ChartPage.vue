@@ -5,7 +5,6 @@ import BoardColumn from "../components/BoardColumn.vue";
 import { useStalePoll } from "../composables/useStalePoll";
 import { groupsOf, latestOfBoard, resolveCatalogBoard } from "../lib/catalog-board";
 import { platformLabel } from "../lib/boards";
-import { formatUpdatedAt, risingCount } from "../lib/format";
 import { useChartsStore } from "../stores/charts";
 
 const props = defineProps<{ board: string }>();
@@ -26,7 +25,6 @@ const current = computed(() => {
 const latest = computed(() =>
   current.value ? latestOfBoard(store.latest, store.boards, current.value) : undefined,
 );
-const items = computed(() => latest.value?.items ?? []);
 const pickerGroups = computed(() =>
   source.value ? groupsOf(store.catalog, source.value.platform) : [],
 );
@@ -79,24 +77,27 @@ watch(current, (board) => {
     <section class="mb-6">
       <RouterLink
         to="/"
-        class="inline-flex min-h-11 items-center text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
+        class="inline-flex min-h-11 items-center gap-1 text-base text-zinc-500 transition hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white"
       >
-        ← 返回总览
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="h-5 w-5 shrink-0" fill="none">
+          <path
+            d="M10 3.5 5.5 8 10 12.5"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        返回
       </RouterLink>
-      <h1 class="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">
+      <h1 class="mt-5 text-2xl font-semibold tracking-tight md:text-3xl">
         {{ source ? platformLabel(source.platform) : "榜单" }}
       </h1>
-      <p class="mt-2 text-sm text-zinc-500">
-        点榜名切换该平台全部官方榜。{{ items.length }} 首 · 升 {{ risingCount(items) }}
-        · {{ formatUpdatedAt(latest?.fetched_at ?? latest?.updated_at) }}
-        · 分数只在本榜内归一化
-      </p>
     </section>
     <BoardColumn
       v-if="current"
       :board="current"
       :latest="latest"
-      :link-to-chart="false"
       :picker-groups="pickerGroups"
       @pick="setKey"
       @reorder="onReorder"

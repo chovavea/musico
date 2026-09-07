@@ -99,28 +99,6 @@ onUnmounted(() => {
       </div>
       <div class="mx-2 h-px bg-zinc-100 dark:bg-white/10" role="separator" />
       <RouterLink
-        to="/boards"
-        class="flex h-11 items-center gap-2 rounded-xl px-2 text-sm hover:bg-zinc-100 dark:hover:bg-white/10"
-        :class="route.name === 'boards' ? 'bg-zinc-100 dark:bg-white/10' : ''"
-        @click="open = false"
-      >
-        <span>榜单管理</span>
-        <svg
-          viewBox="0 0 16 16"
-          class="ml-auto h-3.5 w-3.5 shrink-0 text-zinc-400"
-          fill="none"
-          aria-hidden="true"
-        >
-          <path
-            d="M6 3.5 10.5 8 6 12.5"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </RouterLink>
-      <RouterLink
         to="/health"
         class="flex h-11 items-center gap-2 rounded-xl px-2 text-sm hover:bg-zinc-100 dark:hover:bg-white/10"
         :class="route.name === 'health' ? 'bg-zinc-100 dark:bg-white/10' : ''"

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { chartShortName, platformLabel } from "../lib/boards";
-import { formatUpdatedAt, risingCount } from "../lib/format";
+import { rowGridClass } from "../lib/list-grid";
 import { usePlayerStore } from "../stores/player";
 import type { BoardInfo, LatestBoard } from "../types";
 import HeroCard from "./HeroCard.vue";
@@ -15,11 +15,9 @@ const props = withDefaults(
     board: BoardInfo;
     latest?: LatestBoard;
     showHero?: boolean;
-    linkToChart?: boolean;
-    limit?: number;
     pickerGroups?: CatalogGroup[];
   }>(),
-  { showHero: true, linkToChart: true },
+  { showHero: true },
 );
 
 const emit = defineEmits<{
@@ -27,10 +25,42 @@ const emit = defineEmits<{
   reorder: [key: string, beforeKey: string | null];
 }>();
 
+const PAGE_SIZE = 10;
 const allItems = computed(() => props.latest?.items ?? []);
-const items = computed(() =>
-  props.limit ? allItems.value.slice(0, props.limit) : allItems.value,
+const visibleCount = ref(PAGE_SIZE);
+const items = computed(() => allItems.value.slice(0, visibleCount.value));
+const hasMore = computed(() => visibleCount.value < allItems.value.length);
+
+const sentinel = ref<HTMLElement | null>(null);
+let observer: IntersectionObserver | null = null;
+
+function loadMore() {
+  if (!hasMore.value) return;
+  visibleCount.value = Math.min(allItems.value.length, visibleCount.value + PAGE_SIZE);
+}
+
+function connectObserver() {
+  observer?.disconnect();
+  observer = null;
+  const el = sentinel.value;
+  if (!el) return;
+  observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) loadMore();
+    }
+  }, { rootMargin: "200px 0px" });
+  observer.observe(el);
+}
+
+watch([hasMore, sentinel], () => connectObserver(), { flush: "post" });
+watch(
+  () => props.board.id,
+  () => {
+    visibleCount.value = PAGE_SIZE;
+  },
 );
+onMounted(() => connectObserver());
+onBeforeUnmount(() => observer?.disconnect());
 const player = usePlayerStore();
 const staleLabel = computed(() => {
   const value = props.latest?.staleness;
@@ -61,40 +91,34 @@ const staleLabel = computed(() => {
         >
           {{ chartShortName(board.name) }}
         </RouterLink>
-        <p class="text-xs text-zinc-500">
-          {{ allItems.length }} 首 · 升 {{ risingCount(allItems) }}
-          · {{ formatUpdatedAt(latest?.fetched_at ?? latest?.updated_at) }}
-        </p>
         <p v-if="staleLabel" class="text-xs text-amber-600 dark:text-amber-400">{{ staleLabel }}</p>
       </div>
-      <div class="flex shrink-0 items-center gap-1">
+      <div class="flex shrink-0 items-center">
         <button
           v-if="allItems.length"
           type="button"
-          class="grid h-11 place-items-center rounded-full px-3 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
+          class="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-4 text-sm font-medium text-zinc-600 ring-1 ring-zinc-300 transition hover:bg-zinc-100 hover:text-zinc-900 active:scale-95 dark:text-zinc-300 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white"
+          :aria-label="`播放本榜：${board.name}`"
+          :title="`播放本榜：${board.name}`"
           @click="allItems[0] && player.play(allItems[0], allItems)"
         >
+          <svg viewBox="0 0 16 16" aria-hidden="true" class="h-3.5 w-3.5 shrink-0 fill-current">
+            <path d="M5 3.3 12.2 8 5 12.7V3.3Z" />
+          </svg>
           播放本榜
         </button>
-        <RouterLink
-          v-if="linkToChart"
-          :to="`/charts/${board.id}`"
-          class="grid h-11 place-items-center rounded-full px-3 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
-        >
-          全部
-        </RouterLink>
       </div>
     </div>
     <div
       class="overflow-hidden rounded-2xl bg-white ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
     >
       <div
-        class="grid grid-cols-[2.25rem_2.75rem_minmax(0,1fr)_auto] gap-3 border-b border-zinc-100 px-3 py-2 text-xs text-zinc-400 dark:border-white/5"
+        :class="[rowGridClass, 'gap-3 border-b border-zinc-100 px-3 py-2 text-xs text-zinc-400 dark:border-white/5']"
       >
-        <span class="text-right">#</span>
+        <span class="text-right">排名</span>
         <span />
         <span>曲目</span>
-        <span class="text-right">升降</span>
+        <span class="flex items-center gap-2"><span class="hidden w-8 shrink-0 sm:inline-block" aria-hidden="true" /><span>升降</span></span>
       </div>
       <div class="divide-y divide-zinc-100 dark:divide-white/5">
         <RankRow
@@ -104,6 +128,7 @@ const staleLabel = computed(() => {
           :queue="allItems"
         />
       </div>
+      <div v-if="hasMore" ref="sentinel" class="h-4" aria-hidden="true" />
       <div v-if="!items.length" class="space-y-3 px-3 py-4">
         <div v-for="n in 8" :key="n" class="flex items-center gap-3">
           <div class="skel h-4 w-6" />

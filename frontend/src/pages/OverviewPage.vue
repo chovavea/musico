@@ -5,7 +5,7 @@ import HeroCard from "../components/HeroCard.vue";
 import { useStalePoll } from "../composables/useStalePoll";
 import { groupsOf, latestOfBoard, resolveCatalogBoard } from "../lib/catalog-board";
 import { platformShortName } from "../lib/boards";
-import { risingCount, todayLabel } from "../lib/format";
+import { todayLabel } from "../lib/format";
 import { useChartsStore } from "../stores/charts";
 import type { BoardInfo } from "../types";
 
@@ -85,28 +85,9 @@ onMounted(() => {
 
 <template>
   <div>
-    <section class="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <p class="text-sm text-zinc-500">{{ todayLabel() }}</p>
-        <h1 class="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">今日榜单</h1>
-        <p class="mt-2 max-w-xl text-sm text-zinc-500">
-          点每列榜名切换该平台全部官方榜。分数只在本榜内归一化，不是跨平台同一首歌。
-        </p>
-      </div>
-      <div class="flex flex-wrap gap-2 text-sm">
-        <span
-          class="rounded-full bg-white px-3 py-1 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-white/10"
-        >
-          {{ platformShortName(left.platform, store.platforms) }} {{ leftItems.length }} 首 · 升
-          {{ risingCount(leftItems) }}
-        </span>
-        <span
-          class="rounded-full bg-white px-3 py-1 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-white/10"
-        >
-          {{ platformShortName(right.platform, store.platforms) }} {{ rightItems.length }} 首 · 升
-          {{ risingCount(rightItems) }}
-        </span>
-      </div>
+    <section class="mb-6">
+      <p class="text-sm text-zinc-500">{{ todayLabel() }}</p>
+      <h1 class="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">今日榜单</h1>
     </section>
 
     <div class="mb-4 grid grid-cols-2 gap-1 rounded-full bg-zinc-200/80 p-1 md:hidden dark:bg-zinc-800">
@@ -147,8 +128,6 @@ onMounted(() => {
         :board="left"
         :latest="leftLatest"
         :show-hero="false"
-        :limit="15"
-        :link-to-chart="!left.id.startsWith('catalog:')"
         :picker-groups="groupsOf(store.catalog, left.platform)"
         @pick="setKey('left', $event)"
         @reorder="(key, beforeKey) => store.reorderCatalogChart(left.platform, key, beforeKey)"
@@ -158,8 +137,6 @@ onMounted(() => {
         :board="right"
         :latest="rightLatest"
         :show-hero="false"
-        :limit="15"
-        :link-to-chart="!right.id.startsWith('catalog:')"
         :picker-groups="groupsOf(store.catalog, right.platform)"
         @pick="setKey('right', $event)"
         @reorder="(key, beforeKey) => store.reorderCatalogChart(right.platform, key, beforeKey)"
