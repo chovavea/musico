@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 import structlog
+import yaml
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -14,13 +15,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.adapters.download_worker import DownloadWorker
 from app.adapters.http.middleware import RequestIdMiddleware
 from app.adapters.http.routes import build_router
 from app.adapters.persistence.database import make_engine, make_session_factory
 from app.adapters.persistence.repository import ChartRepository
 from app.adapters.scheduler.jobs import ChartScheduler
+from app.download_sources.registry import load_download_sources
 from app.logging import configure_logging
 from app.plugins._registry import load_registry
+from app.services.downloads import DownloadService
 from app.services.boards_config import BoardsConfigError, load_raw_boards, parse_board_specs
 from app.services.collect import CollectService
 from app.settings import Settings, get_settings
@@ -55,6 +59,17 @@ def _resolve_boards_path(settings: Settings) -> Path:
     if fallback.is_file():
         return fallback
     return path
+
+
+def _resolve_download_config(settings: Settings) -> dict[str, object]:
+    path = settings.download_source_config
+    if not path.is_file():
+        fallback = Path(__file__).resolve().parents[2] / "configs" / "download_sources.yaml"
+        path = fallback if fallback.is_file() else path
+    if not path.is_file():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return raw if isinstance(raw, dict) else {}
 
 
 def _run_alembic(settings: Settings) -> None:
@@ -107,6 +122,11 @@ def create_app(
         follow_redirects=True,
     )
     registry = load_registry(client)
+    download_sources = load_download_sources(
+        client,
+        roots=settings.download_roots,
+        config=_resolve_download_config(settings),
+    )
     unknown = [spec.platform for spec in specs if spec.platform not in registry.plugins]
     if unknown:
         log.error("unknown_platforms", platforms=unknown)
@@ -117,6 +137,8 @@ def create_app(
 
     collect = CollectService(registry, session_factory, settings, cache={})
     scheduler = ChartScheduler(collect, specs) if start_scheduler else None
+    download_service = DownloadService(session_factory, settings)
+    download_worker = DownloadWorker(session_factory, client, download_sources, settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -126,9 +148,12 @@ def create_app(
         async with session_factory() as session:
             await ChartRepository(session).upsert_catalog(specs, registry.platform_names())
             await session.commit()
+        settings.music_library_dir.mkdir(parents=True, exist_ok=True)
         if scheduler is not None:
             scheduler.start()
+        download_worker.start()
         yield
+        await download_worker.shutdown()
         if scheduler is not None:
             scheduler.shutdown()
         await client.aclose()
@@ -140,6 +165,9 @@ def create_app(
     app.state.settings = settings
     app.state.board_specs = specs
     app.state.registry = registry
+    app.state.download_sources = download_sources
+    app.state.download_service = download_service
+    app.state.download_worker = download_worker
     app.state.session_factory = session_factory
     app.state.latest_cache = collect.latest_cache
     app.state.collect = collect

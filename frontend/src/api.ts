@@ -1,8 +1,11 @@
 import type {
   BoardInfo,
   CatalogPlatform,
+  DownloadSummary,
+  DownloadTask,
   Envelope,
   HealthPayload,
+  LibraryAsset,
   LatestBoard,
   PlatformInfo,
 } from "./types";
@@ -86,4 +89,45 @@ export function catalogLatest(
 
 export function health(): Promise<Envelope<HealthPayload>> {
   return getJson("/api/v1/health");
+}
+
+export interface DownloadTrackPayload {
+  platform: string;
+  external_id: string;
+  title: string;
+  artist: string;
+  album?: string | null;
+  duration_ms?: number | null;
+  isrc?: string | null;
+  version?: string | null;
+}
+
+export function createDownload(
+  track: DownloadTrackPayload,
+): Promise<Envelope<{ state: string; task?: DownloadTask; asset?: LibraryAsset }>> {
+  return sendJson("/api/v1/downloads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(track),
+  });
+}
+
+export function downloadSummary(): Promise<Envelope<DownloadSummary>> {
+  return getJson("/api/v1/downloads/summary");
+}
+
+export function listDownloads(): Promise<Envelope<{ items: DownloadTask[] }>> {
+  return getJson("/api/v1/downloads");
+}
+
+export function retryDownload(id: string): Promise<Envelope<DownloadTask>> {
+  return sendJson(`/api/v1/downloads/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+export function listLibrary(): Promise<Envelope<{ items: LibraryAsset[] }>> {
+  return getJson("/api/v1/library");
+}
+
+export function deleteLibraryAsset(id: string): Promise<Envelope<{ deleted: boolean }>> {
+  return sendJson(`/api/v1/library/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

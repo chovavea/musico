@@ -25,6 +25,24 @@ class Settings(BaseSettings):
     boards_yaml: Path = Field(default=Path("/app/configs/boards.yaml"), alias="BOARDS_YAML")
     http_timeout_sec: float = Field(default=15.0, alias="HTTP_TIMEOUT_SEC")
     latest_cache_ttl_sec: int = Field(default=45, alias="LATEST_CACHE_TTL_SEC")
+    music_library_dir: Path = Field(default=Path("/app/data/music"), alias="MUSIC_LIBRARY_DIR")
+    download_source_config: Path = Field(
+        default=Path("/app/configs/download_sources.yaml"), alias="DOWNLOAD_SOURCE_CONFIG"
+    )
+    download_source_dirs: str = Field(default="", alias="DOWNLOAD_SOURCE_DIRS")
+    download_max_retries: int = Field(default=3, alias="DOWNLOAD_MAX_RETRIES")
+    download_timeout_sec: float = Field(default=300.0, alias="DOWNLOAD_TIMEOUT_SEC")
+    download_max_file_size: int = Field(default=2 * 1024 * 1024 * 1024, alias="DOWNLOAD_MAX_FILE_SIZE")
+    download_poll_sec: float = Field(default=1.0, alias="DOWNLOAD_POLL_SEC")
+    download_lease_sec: int = Field(default=60, alias="DOWNLOAD_LEASE_SEC")
+
+    @property
+    def download_roots(self) -> list[Path]:
+        configured = [
+            Path(item.strip()) for item in self.download_source_dirs.split(",") if item.strip()
+        ]
+        builtin = Path(__file__).resolve().parent / "download_sources"
+        return configured + ([builtin] if builtin not in configured else [])
 
     @property
     def sync_database_url(self) -> str:

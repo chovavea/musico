@@ -3,9 +3,11 @@ import { computed } from "vue";
 import type { RankItem } from "../types";
 import { rowGridClass } from "../lib/list-grid";
 import { usePlayerStore } from "../stores/player";
+import { useDownloadsStore } from "../stores/downloads";
 
 const props = defineProps<{ item: RankItem; queue?: RankItem[] }>();
 const player = usePlayerStore();
+const downloads = useDownloadsStore();
 
 const delta = computed(() => {
   if (props.item.previous_rank == null) {
@@ -43,14 +45,44 @@ const active = computed(
 function onPlay() {
   player.play(props.item, props.queue);
 }
+
+const downloadState = computed(() => {
+  if (props.item.library_status === "ready") return "已下载";
+  if (props.item.active_download_id) return "队列中";
+  return "下载";
+});
+
+async function onDownload(event: MouseEvent) {
+  event.stopPropagation();
+  if (props.item.library_status === "ready" || props.item.active_download_id) return;
+  await downloads.enqueue({
+    platform: props.item.platform,
+    external_id: props.item.external_id,
+    title: props.item.title,
+    artist: props.item.artist,
+    album: props.item.album,
+    duration_ms: props.item.duration_ms,
+    isrc: props.item.isrc,
+    version: props.item.version,
+  });
+}
+
+function onRowKey(event: KeyboardEvent) {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    onPlay();
+  }
+}
 </script>
 
 <template>
-  <button
-    type="button"
+  <div
+    role="button"
+    tabindex="0"
     class="group min-h-[52px] w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-white/5"
     :class="[rowGridClass, active ? 'bg-zinc-50 dark:bg-white/5' : '']"
     @click="onPlay"
+    @keydown="onRowKey"
   >
     <div class="tabular text-right font-semibold" :class="rankKlass">
       {{ String(item.rank).padStart(2, "0") }}
@@ -83,6 +115,19 @@ function onPlay() {
       >
         试听
       </span>
+      <button
+        type="button"
+        class="grid h-11 min-w-11 place-items-center rounded-full px-3 text-xs ring-1 ring-zinc-300 hover:bg-zinc-100 dark:ring-white/15 dark:hover:bg-white/10"
+        :class="item.library_status === 'ready' ? 'text-emerald-600 dark:text-emerald-300' : 'text-zinc-600 dark:text-zinc-300'"
+        :aria-label="downloadState"
+        :title="downloadState"
+        @click="onDownload"
+      >
+        <svg v-if="item.library_status !== 'ready'" viewBox="0 0 16 16" class="h-4 w-4" fill="none" aria-hidden="true">
+          <path d="M8 2.5v7m0 0 2.5-2.5M8 9.5 5.5 7M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span v-else aria-hidden="true">✓</span>
+      </button>
     </div>
-  </button>
+  </div>
 </template>

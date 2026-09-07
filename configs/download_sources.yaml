@@ -1,0 +1,4 @@
+sources:
+  - id: aries
+    enabled: true
+    priority: 100

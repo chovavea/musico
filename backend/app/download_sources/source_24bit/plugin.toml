@@ -1,0 +1,9 @@
+id = "aries"
+name = "aries 无损音乐"
+entrypoint = "source:create_source"
+priority = 100
+hosts = ["example.invalid", "www.example.invalid"]
+
+[config_schema]
+search_url_template = "https://www.example.invalid/search?q={query}"
+max_results = 8

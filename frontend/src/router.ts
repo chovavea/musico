@@ -3,6 +3,7 @@ import OverviewPage from "./pages/OverviewPage.vue";
 import BoardsPage from "./pages/BoardsPage.vue";
 import ChartPage from "./pages/ChartPage.vue";
 import HealthPage from "./pages/HealthPage.vue";
+import LibraryPage from "./pages/LibraryPage.vue";
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -11,5 +12,6 @@ export const router = createRouter({
     { path: "/boards", name: "boards", component: BoardsPage },
     { path: "/charts/:board", name: "chart", component: ChartPage, props: true },
     { path: "/health", name: "health", component: HealthPage },
+    { path: "/library", name: "library", component: LibraryPage },
   ],
 });

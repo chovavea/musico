@@ -1,6 +1,6 @@
 # musico
 
-自托管音乐热榜：QQ 音乐热歌榜 + 网易云热歌榜。只聚合公开元数据和官方预览，不解灰、不下载、不做跨平台同一首歌匹配。
+自托管音乐热榜：QQ 音乐热歌榜 + 网易云热歌榜，并支持通过独立下载源插件保存高规格音频到本地音乐库。下载源只使用其公开、授权的页面或直链，不绕过 DRM 或第三方访问限制。
 
 改 `configs/boards.yaml`（含 `interval_sec`）后必须**重启容器**，调度间隔不会热更新。
 
@@ -33,6 +33,14 @@ npm install
 npm run dev
 ```
 
+## 下载源插件
+
+下载源位于 `backend/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态和优先级写在 `configs/download_sources.yaml`，修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。
+
+核心负责歌曲匹配、最高质量选择、单任务队列、重试、断点续传、SHA-256 校验和文件入库。下载源只实现 `search` 和 `resolve`，不直接操作文件。
+
+音乐文件默认写入 `data/music/`，容器部署时通过 `MUSIC_LIBRARY_DIR` 修改。PostgreSQL 中的 `musico_library` schema 保存曲目、文件引用和下载任务，不保存音频二进制。
+
 ## 加第三个平台
 
 1. 复制 `backend/app/plugins/qqmusic/`
@@ -41,7 +49,7 @@ npm run dev
 4. 在 `configs/boards.yaml` 加一行，`platform` 对应该 `id`
 5. 加一份录制 JSON fixture 单测
 
-不必改 FastAPI 路由或调度器。
+不必改下载队列或 FastAPI 路由。
 
 ## 完成定义
 

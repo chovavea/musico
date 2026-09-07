@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from app.adapters.http.envelope import fail, ok
 from app.adapters.http.preview import stream_official_preview
 from app.adapters.persistence.repository import ChartRepository
-from app.domain.models import BoardSpec
+from app.domain.models import AudioQuality, BoardSpec, TrackRef
 from app.services.catalog import (
     apply_catalog_order,
     catalog_chart_keys,
@@ -29,6 +30,18 @@ class MoveBoardIn(BaseModel):
 
 class ReorderCatalogIn(BaseModel):
     before_key: str | None = None
+
+
+class DownloadTrackIn(BaseModel):
+    platform: str
+    external_id: str
+    title: str
+    artist: str
+    album: str | None = None
+    duration_ms: int | None = None
+    isrc: str | None = None
+    version: str | None = None
+    requested_quality: AudioQuality | None = None
 
 
 def _board_item(spec: BoardSpec, sort_order: int) -> dict[str, Any]:
@@ -210,12 +223,82 @@ def build_router() -> APIRouter:
         except Exception as exc:
             return fail(50201, str(exc)[:200], status_code=502)
         payload = payload_from_raw(spec, items)
+        async with request.app.state.session_factory() as session:
+            await ChartRepository(session).annotate_library(payload["items"])
         cache[cache_key] = {"ts": now_ts, "data": payload}
         return ok(payload)
 
     @router.get("/preview/{platform}/{external_id}/stream")
     async def preview_stream(platform: str, external_id: str, request: Request) -> StreamingResponse:
         return await stream_official_preview(request, platform, external_id)
+
+    @router.post("/downloads")
+    async def create_download(payload: DownloadTrackIn, request: Request) -> Any:
+        track = TrackRef(**payload.model_dump(exclude={"requested_quality"}))
+        service = request.app.state.download_service
+        data = await service.request(track, payload.requested_quality)
+        return ok(data, status_code=202 if data.get("state") != "ready" else 200)
+
+    @router.get("/downloads/summary")
+    async def download_summary(request: Request) -> Any:
+        return ok(await request.app.state.download_service.summary())
+
+    @router.get("/downloads")
+    async def downloads(request: Request) -> Any:
+        return ok({"items": await request.app.state.download_service.tasks()})
+
+    @router.get("/downloads/{task_id}")
+    async def download_detail(task_id: str, request: Request) -> Any:
+        task = await request.app.state.download_service.task(task_id)
+        if task is None:
+            return fail(40401, "download task not found", status_code=404)
+        return ok(task)
+
+    @router.post("/downloads/{task_id}/retry")
+    async def retry_download(task_id: str, request: Request) -> Any:
+        task = await request.app.state.download_service.retry(task_id)
+        if task is None:
+            return fail(40401, "download task not found", status_code=404)
+        return ok(task)
+
+    @router.get("/library")
+    async def library(request: Request) -> Any:
+        return ok({"items": await request.app.state.download_service.assets()})
+
+    @router.get("/library/{asset_id}/stream")
+    async def library_stream(asset_id: str, request: Request) -> Response:
+        resolved = await request.app.state.download_service.asset(asset_id)
+        if resolved is None:
+            return Response(status_code=404)
+        asset, path, track = resolved
+        if not path.is_file():
+            return Response(status_code=404)
+        return FileResponse(
+            path,
+            media_type=_audio_media_type(asset.format),
+            filename=_download_filename(track, asset.format, inline=True),
+        )
+
+    @router.get("/library/{asset_id}/download")
+    async def library_download(asset_id: str, request: Request) -> Response:
+        resolved = await request.app.state.download_service.asset(asset_id)
+        if resolved is None:
+            return Response(status_code=404)
+        asset, path, track = resolved
+        if not path.is_file():
+            return Response(status_code=404)
+        return FileResponse(
+            path,
+            media_type=_audio_media_type(asset.format),
+            filename=_download_filename(track, asset.format, inline=False),
+        )
+
+    @router.delete("/library/{asset_id}")
+    async def delete_library_asset(asset_id: str, request: Request) -> Any:
+        deleted = await request.app.state.download_service.delete_asset(asset_id)
+        if not deleted:
+            return fail(40401, "library asset not found", status_code=404)
+        return ok({"deleted": True})
 
     @router.get("/health")
     async def health(request: Request) -> Any:
@@ -271,3 +354,21 @@ def _find_spec(request: Request, board_id: str) -> BoardSpec | None:
         if spec.id == board_id:
             return spec
     return None
+
+
+def _audio_media_type(format_name: str) -> str:
+    return {
+        "flac": "audio/flac",
+        "wav": "audio/wav",
+        "dsf": "audio/dsd",
+        "dff": "audio/dsd",
+    }.get(format_name.lower(), "application/octet-stream")
+
+
+def _download_filename(track: Any, format_name: str, *, inline: bool) -> str:
+    title = str(getattr(track, "title", "track") or "track")
+    artist = str(getattr(track, "artist", "unknown") or "unknown")
+    clean = lambda value: re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", value).strip(" .")[:120] or "track"
+    extension = format_name.lower().lstrip(".")
+    suffix = f" [{extension.upper()}]" if not inline else ""
+    return f"{clean(title)} - {clean(artist)}{suffix}.{extension}"
