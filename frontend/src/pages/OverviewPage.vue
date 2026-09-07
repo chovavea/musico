@@ -3,109 +3,72 @@ import { computed, onMounted, ref, watch } from "vue";
 import BoardColumn from "../components/BoardColumn.vue";
 import HeroCard from "../components/HeroCard.vue";
 import { useStalePoll } from "../composables/useStalePoll";
-import { platformShortName, sortedBoards } from "../lib/boards";
+import { groupsOf, latestOfBoard, resolveCatalogBoard } from "../lib/catalog-board";
+import { platformShortName } from "../lib/boards";
 import { risingCount, todayLabel } from "../lib/format";
 import { useChartsStore } from "../stores/charts";
-import type { BoardInfo, CatalogGroup } from "../types";
+import type { BoardInfo } from "../types";
 
 const store = useChartsStore();
 useStalePoll();
 
 const tab = ref<0 | 1>(0);
-const keys = ref<Record<string, string>>({
-  qqmusic: "26",
-  netease: "3778678",
-});
+type OverviewSlot = "left" | "right";
+const keys = ref<Partial<Record<OverviewSlot, string>>>({});
 
-const orderedBoards = computed(() => sortedBoards(store.boards));
-const firstBoard = computed(() => orderedBoards.value[0]);
-const secondBoard = computed(() => orderedBoards.value[1]);
+const leftSource = computed(() =>
+  store.boards.find((item) => item.enabled && item.overview_slot === "left"),
+);
+const rightSource = computed(() =>
+  store.boards.find((item) => item.enabled && item.overview_slot === "right"),
+);
 
-function groupsOf(platform: string): CatalogGroup[] {
-  return store.catalog.find((item) => item.id === platform)?.groups ?? [];
-}
-
-function chartName(platform: string, key: string): string {
-  for (const group of groupsOf(platform)) {
-    const chart = group.charts.find((item) => item.key === key);
-    if (chart) return chart.name;
-  }
-  return store.boards.find((item) => item.platform === platform && item.chart_key === key)?.name ?? key;
-}
-
-function resolveBoard(platform: string, key: string): BoardInfo {
-  const yaml = store.boards.find((item) => item.platform === platform && item.chart_key === key);
-  if (yaml) return yaml;
-  const prefix = platform === "qqmusic" ? "QQ音乐" : "网易云";
-  const label = chartName(platform, key);
-  return {
-    id: `catalog:${platform}:${key}`,
-    platform,
-    name: label.includes("榜") ? label : `${prefix}${label}`,
-    type: "catalog",
-    enabled: true,
-    interval_sec: 1800,
-    chart_key: key,
-  };
-}
-
-function columnBoard(source: BoardInfo | undefined, fallbackPlatform: string, fallbackKey: string): BoardInfo {
+function columnBoard(
+  source: BoardInfo | undefined,
+  slot: OverviewSlot,
+  fallbackPlatform: string,
+  fallbackKey: string,
+): BoardInfo {
   const platform = source?.platform ?? fallbackPlatform;
-  const key = keys.value[platform] || source?.chart_key || fallbackKey;
-  return resolveBoard(platform, key);
+  const key = keys.value[slot] || source?.chart_key || fallbackKey;
+  return resolveCatalogBoard(store.catalog, store.boards, platform, key);
 }
 
-const left = computed(() => columnBoard(firstBoard.value, "qqmusic", "26"));
-const right = computed(() => columnBoard(secondBoard.value, "netease", "3778678"));
+const left = computed(() => columnBoard(leftSource.value, "left", "qqmusic", "26"));
+const right = computed(() => columnBoard(rightSource.value, "right", "netease", "3778678"));
 
-function latestOf(board: BoardInfo) {
-  const direct = store.latest[board.id];
-  if (direct?.items.length) return direct;
-  const yaml = store.boards.find(
-    (item) => item.platform === board.platform && item.chart_key === board.chart_key,
-  );
-  if (yaml && store.latest[yaml.id]?.items.length) return store.latest[yaml.id];
-  if (board.chart_key) {
-    const catalogId = `catalog:${board.platform}:${board.chart_key}`;
-    if (store.latest[catalogId]?.items.length) return store.latest[catalogId];
-  }
-  return direct;
-}
-
-const leftLatest = computed(() => latestOf(left.value));
-const rightLatest = computed(() => latestOf(right.value));
+const leftLatest = computed(() => latestOfBoard(store.latest, store.boards, left.value));
+const rightLatest = computed(() => latestOfBoard(store.latest, store.boards, right.value));
 const leftItems = computed(() => leftLatest.value?.items ?? []);
 const rightItems = computed(() => rightLatest.value?.items ?? []);
 
-async function ensureLatest(board: BoardInfo) {
-  if (store.latest[board.id]?.items.length) return;
-  if (board.id.startsWith("catalog:") && board.chart_key) {
-    await store.refreshCatalogLatest(board.platform, board.chart_key, board.id);
-    return;
-  }
-  await store.refreshLatest(board.id);
-}
-
 function applyDefaults() {
-  for (const board of store.boards) {
-    if (board.chart_key && !keys.value[board.platform]) {
-      keys.value[board.platform] = board.chart_key;
+  const sources: Array<[OverviewSlot, BoardInfo | undefined]> = [
+    ["left", leftSource.value],
+    ["right", rightSource.value],
+  ];
+  for (const [slot, board] of sources) {
+    if (board?.chart_key && !keys.value[slot]) {
+      keys.value[slot] = board.chart_key;
     }
   }
 }
 
-function setKey(platform: string, key: string) {
-  keys.value = { ...keys.value, [platform]: key };
+function setKey(slot: OverviewSlot, key: string) {
+  keys.value = { ...keys.value, [slot]: key };
 }
 
 watch(
-  () => store.boards.map((item) => `${item.id}:${item.chart_key}`).join(),
+  () =>
+    store.boards
+      .map((item) => `${item.id}:${item.chart_key}:${item.overview_slot ?? ""}`)
+      .join(),
   () => applyDefaults(),
 );
 
 watch([left, right], ([nextLeft, nextRight]) => {
-  void ensureLatest(nextLeft);
-  void ensureLatest(nextRight);
+  void store.ensureLatest(nextLeft);
+  void store.ensureLatest(nextRight);
 });
 
 onMounted(() => {
@@ -186,8 +149,8 @@ onMounted(() => {
         :show-hero="false"
         :limit="15"
         :link-to-chart="!left.id.startsWith('catalog:')"
-        :picker-groups="groupsOf(left.platform)"
-        @pick="setKey(left.platform, $event)"
+        :picker-groups="groupsOf(store.catalog, left.platform)"
+        @pick="setKey('left', $event)"
         @reorder="(key, beforeKey) => store.reorderCatalogChart(left.platform, key, beforeKey)"
       />
       <BoardColumn
@@ -197,8 +160,8 @@ onMounted(() => {
         :show-hero="false"
         :limit="15"
         :link-to-chart="!right.id.startsWith('catalog:')"
-        :picker-groups="groupsOf(right.platform)"
-        @pick="setKey(right.platform, $event)"
+        :picker-groups="groupsOf(store.catalog, right.platform)"
+        @pick="setKey('right', $event)"
         @reorder="(key, beforeKey) => store.reorderCatalogChart(right.platform, key, beforeKey)"
       />
     </div>

@@ -167,7 +167,7 @@ def live_spec(platform: str, key: str, name: str) -> BoardSpec:
         platform=platform,
         name=name,
         type="catalog",
-        interval_sec=1800,
+        interval_sec=3600,
         enabled=True,
         extra=extra,
     )

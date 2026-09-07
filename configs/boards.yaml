@@ -5,7 +5,7 @@ boards:
     type: hot
     enabled: true
     overview_slot: left
-    interval_sec: 1800
+    interval_sec: 3600
     extra: { top_id: 26 }
   - id: netease_hot
     platform: netease
@@ -13,12 +13,12 @@ boards:
     type: hot
     enabled: true
     overview_slot: right
-    interval_sec: 1800
+    interval_sec: 3600
     extra: { playlist_id: "3778678" }
   - id: qq_douyin
     platform: qqmusic
     name: QQ音乐抖音热歌榜
     type: douyin
     enabled: true
-    interval_sec: 1800
+    interval_sec: 3600
     extra: { top_id: 60 }
