@@ -41,6 +41,7 @@ def _board_item(spec: BoardSpec, sort_order: int) -> dict[str, Any]:
         "interval_sec": spec.interval_sec,
         "extra": spec.extra,
         "chart_key": chart_key_for_spec(spec),
+        "overview_slot": spec.overview_slot,
         "sort_order": sort_order,
     }
 

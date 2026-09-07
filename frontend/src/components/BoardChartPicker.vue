@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { CatalogChart, CatalogGroup } from "../types";
 
 const props = defineProps<{
@@ -29,6 +29,9 @@ const moved = ref(false);
 const ignoreClickUntil = ref(0);
 const rowHeight = ref(44);
 const ghost = ref({ top: 0, left: 0, width: 0, name: "", selected: false });
+/** 乐观提交：拖放后到接口返回前，列表以该顺序展示。 */
+const localKeys = ref<string[] | null>(null);
+const saving = ref(false);
 
 let pending: {
   key: string;
@@ -40,7 +43,7 @@ let pending: {
   timer: number;
 } | null = null;
 
-const canDrag = computed(() => !query.value.trim());
+const canDrag = computed(() => !query.value.trim() && !saving.value);
 
 function isSongChart(chart: CatalogChart): boolean {
   if (chart.playable === false) return false;
@@ -49,64 +52,58 @@ function isSongChart(chart: CatalogChart): boolean {
 }
 
 const ordered = computed(() => {
-  const items: CatalogChart[] = [];
+  const byKey = new Map<string, CatalogChart>();
+  const fallback: CatalogChart[] = [];
   for (const group of props.groups) {
     for (const chart of group.charts) {
-      if (isSongChart(chart)) items.push(chart);
+      if (!isSongChart(chart)) continue;
+      byKey.set(chart.key, chart);
+      fallback.push(chart);
     }
   }
-  items.sort((a, b) => (a.sort_order ?? 10_000) - (b.sort_order ?? 10_000));
-  return items;
+  if (localKeys.value) {
+    const items: CatalogChart[] = [];
+    for (const key of localKeys.value) {
+      const chart = byKey.get(key);
+      if (chart) items.push(chart);
+    }
+    for (const chart of fallback) {
+      if (!localKeys.value.includes(chart.key)) items.push(chart);
+    }
+    return items;
+  }
+  fallback.sort((a, b) => (a.sort_order ?? 10_000) - (b.sort_order ?? 10_000));
+  return fallback;
 });
 
-const filtered = computed(() => {
+const groupLabelByKey = computed(() => {
+  const map = new Map<string, string>();
+  for (const group of props.groups) {
+    for (const chart of group.charts) {
+      if (isSongChart(chart)) map.set(chart.key, group.name);
+    }
+  }
+  return map;
+});
+
+const visibleCharts = computed(() => {
   const needle = query.value.trim().toLowerCase();
-  return props.groups
-    .map((group) => ({
-      ...group,
-      charts: group.charts
-        .filter((chart) => isSongChart(chart) && (!needle || chart.name.toLowerCase().includes(needle)))
-        .slice()
-        .sort((a, b) => (a.sort_order ?? 10_000) - (b.sort_order ?? 10_000)),
-    }))
-    .filter((group) => group.charts.length);
+  return ordered.value.filter((chart) => !needle || chart.name.toLowerCase().includes(needle));
 });
-
-function groupOf(key: string): CatalogGroup | undefined {
-  return filtered.value.find((group) => group.charts.some((chart) => chart.key === key));
-}
-
-function originalIndex(group: CatalogGroup, key: string): number {
-  return group.charts.findIndex((chart) => chart.key === key);
-}
 
 type DisplayRow = { type: "ph" } | { type: "chart"; chart: CatalogChart };
 
-function displayRows(group: CatalogGroup): DisplayRow[] {
-  if (!lifted.value || !draggingKey.value || groupOf(draggingKey.value)?.name !== group.name) {
-    return group.charts.map((chart) => ({ type: "chart", chart }));
+const displayRows = computed<DisplayRow[]>(() => {
+  if (!lifted.value || !draggingKey.value) {
+    return visibleCharts.value.map((chart) => ({ type: "chart", chart }));
   }
-  const rows: DisplayRow[] = group.charts
+  const rows: DisplayRow[] = visibleCharts.value
     .filter((chart) => chart.key !== draggingKey.value)
     .map((chart) => ({ type: "chart", chart }));
   const idx = Math.max(0, Math.min(insertAt.value, rows.length));
   rows.splice(idx, 0, { type: "ph" });
   return rows;
-}
-
-function beforeKeyForDrop(group: CatalogGroup, movingKey: string, index: number): string | null {
-  const rest = group.charts.filter((chart) => chart.key !== movingKey);
-  const nextInGroup = rest[index];
-  if (nextInGroup) return nextInGroup.key;
-  const remaining = ordered.value.map((chart) => chart.key).filter((key) => key !== movingKey);
-  if (!rest.length) {
-    const current = ordered.value.findIndex((chart) => chart.key === movingKey);
-    return ordered.value[current + 1]?.key ?? null;
-  }
-  const last = rest[rest.length - 1].key;
-  const lastPos = remaining.indexOf(last);
-  return lastPos >= 0 ? remaining[lastPos + 1] ?? null : null;
-}
+});
 
 function onDocClick(event: MouseEvent) {
   if (lifted.value || Date.now() < ignoreClickUntil.value) return;
@@ -140,13 +137,9 @@ function layoutTop(el: HTMLElement): number {
   return el.getBoundingClientRect().top - shift;
 }
 
-function insertIndexFromY(group: CatalogGroup, clientY: number): number {
+function insertIndexFromY(clientY: number): number {
   if (!listEl.value) return 0;
-  const others = [
-    ...listEl.value.querySelectorAll<HTMLElement>(
-      `[data-group-name="${CSS.escape(group.name)}"][data-chart-key]`,
-    ),
-  ];
+  const others = [...listEl.value.querySelectorAll<HTMLElement>("[data-chart-key]")];
   for (let i = 0; i < others.length; i += 1) {
     const top = layoutTop(others[i]);
     if (clientY < top + rowHeight.value / 2) return i;
@@ -176,11 +169,9 @@ function unbindWindow() {
 
 function activateLift(chart: CatalogChart, clientY: number) {
   if (!pending) return;
-  const group = groupOf(chart.key);
-  if (!group) return;
   lifted.value = true;
   draggingKey.value = chart.key;
-  insertAt.value = originalIndex(group, chart.key);
+  insertAt.value = visibleCharts.value.findIndex((item) => item.key === chart.key);
   moved.value = false;
   ghost.value = {
     ...ghost.value,
@@ -243,7 +234,7 @@ function onWindowMove(event: PointerEvent) {
       return;
     }
     if (dist >= MOUSE_DISTANCE) {
-      const chart = ordered.value.find((item) => item.key === pending?.key);
+      const chart = visibleCharts.value.find((item) => item.key === pending?.key);
       if (chart) activateLift(chart, event.clientY);
     }
     return;
@@ -251,10 +242,8 @@ function onWindowMove(event: PointerEvent) {
 
   event.preventDefault();
   ghost.value = { ...ghost.value, top: event.clientY - pending.grabY };
-  const group = groupOf(draggingKey.value);
-  if (!group) return;
   autoScroll(event.clientY);
-  const next = insertIndexFromY(group, event.clientY);
+  const next = insertIndexFromY(event.clientY);
   if (next !== insertAt.value) {
     insertAt.value = next;
     moved.value = true;
@@ -268,7 +257,6 @@ function onWindowUp(event: PointerEvent) {
   window.clearTimeout(pending.timer);
   unbindWindow();
   listEl.value?.classList.remove("touch-none");
-  const group = groupOf(draggingKey.value);
   const key = draggingKey.value;
   const index = insertAt.value;
   const didLift = lifted.value;
@@ -280,11 +268,29 @@ function onWindowUp(event: PointerEvent) {
   moved.value = false;
   if (!didLift) return;
   ignoreClickUntil.value = Date.now() + 400;
-  if (!group || !didMove || index < 0) return;
-  const from = originalIndex(group, key);
+  if (!didMove || index < 0 || !key) return;
+  const from = ordered.value.findIndex((chart) => chart.key === key);
   if (index === from) return;
-  emit("reorder", key, beforeKeyForDrop(group, key, index));
+  const rest = ordered.value.filter((chart) => chart.key !== key);
+  const commitIndex = Math.max(0, Math.min(index, rest.length));
+  const next = rest[commitIndex];
+  // 乐观提交：先把本地顺序落到拖放位置，接口确认后由 watch(groups) 接管。
+  localKeys.value = [
+    ...rest.slice(0, commitIndex).map((chart) => chart.key),
+    key,
+    ...rest.slice(commitIndex).map((chart) => chart.key),
+  ];
+  saving.value = true;
+  emit("reorder", key, next ? next.key : null);
 }
+
+watch(
+  () => props.groups,
+  () => {
+    localKeys.value = null;
+    saving.value = false;
+  },
+);
 
 onMounted(() => document.addEventListener("click", onDocClick));
 onUnmounted(() => {
@@ -319,43 +325,48 @@ onUnmounted(() => {
       </div>
       <div
         ref="listEl"
-        class="max-h-80 overflow-y-auto py-1"
+        class="max-h-80 overflow-y-auto px-1 py-1"
         :class="lifted ? 'select-none' : ''"
       >
-        <div v-for="group in filtered" :key="group.name" class="px-1 py-1">
-          <p class="px-3 py-1 text-xs text-zinc-400">{{ group.name }}</p>
-          <TransitionGroup name="chart-sort" tag="div">
-            <div
-              v-for="row in displayRows(group)"
-              :key="row.type === 'ph' ? `ph-${group.name}` : row.chart.key"
-              class="flex min-h-11 items-center rounded-xl px-3 text-sm"
-              :data-group-name="row.type === 'chart' ? group.name : undefined"
-              :data-chart-key="row.type === 'chart' ? row.chart.key : undefined"
-              :class="
-                row.type === 'ph'
-                  ? 'bg-zinc-100 dark:bg-white/10'
-                  : [
-                      'chart-sort-row',
-                      isCurrent(row.chart.key)
-                        ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
-                        : 'hover:bg-zinc-100 dark:hover:bg-white/10',
-                      canDrag && row.chart.playable ? 'cursor-grab' : '',
-                      lifted ? 'cursor-grabbing' : '',
-                      !row.chart.playable ? 'cursor-not-allowed text-zinc-400' : '',
-                    ]
-              "
-              :style="row.type === 'ph' ? { height: `${rowHeight}px` } : undefined"
-              @pointerdown="row.type === 'chart' && onRowDown(row.chart, $event)"
-              @click="row.type === 'chart' && choose(row.chart.key, row.chart.playable)"
-            >
-              <template v-if="row.type === 'chart'">
-                <span class="truncate">{{ row.chart.name }}</span>
-                <span v-if="!row.chart.playable" class="ml-auto shrink-0 text-xs">非歌曲</span>
-              </template>
-            </div>
-          </TransitionGroup>
-        </div>
-        <p v-if="!filtered.length" class="px-3 py-6 text-center text-sm text-zinc-500">没有匹配的榜</p>
+        <TransitionGroup name="chart-sort" tag="div">
+          <div
+            v-for="row in displayRows"
+            :key="row.type === 'ph' ? 'ph' : row.chart.key"
+            class="flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm"
+            :data-chart-key="row.type === 'chart' ? row.chart.key : undefined"
+            :class="
+              row.type === 'ph'
+                ? 'bg-zinc-100 dark:bg-white/10'
+                : [
+                    'chart-sort-row',
+                    isCurrent(row.chart.key)
+                      ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
+                      : 'hover:bg-zinc-100 dark:hover:bg-white/10',
+                    canDrag && row.chart.playable ? 'cursor-grab' : '',
+                    lifted ? 'cursor-grabbing' : '',
+                    !row.chart.playable ? 'cursor-not-allowed text-zinc-400' : '',
+                  ]
+            "
+            :style="row.type === 'ph' ? { height: `${rowHeight}px` } : undefined"
+            @pointerdown="row.type === 'chart' && onRowDown(row.chart, $event)"
+            @click="row.type === 'chart' && choose(row.chart.key, row.chart.playable)"
+          >
+            <template v-if="row.type === 'chart'">
+              <span class="min-w-0 truncate">{{ row.chart.name }}</span>
+              <span
+                class="ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset"
+                :class="
+                  isCurrent(row.chart.key)
+                    ? 'bg-white/10 text-zinc-300 ring-white/20 dark:bg-zinc-900/10 dark:text-zinc-500 dark:ring-zinc-900/20'
+                    : 'bg-zinc-100 text-zinc-500 ring-zinc-200/70 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10'
+                "
+              >
+                {{ groupLabelByKey.get(row.chart.key) ?? '' }}
+              </span>
+            </template>
+          </div>
+        </TransitionGroup>
+        <p v-if="!visibleCharts.length" class="px-3 py-6 text-center text-sm text-zinc-500">没有匹配的榜</p>
       </div>
     </div>
     <Teleport to="body">

@@ -2,7 +2,6 @@
 import { computed } from "vue";
 import { useCoverPalette } from "../composables/useCoverTint";
 import { chartShortName, platformLabel } from "../lib/boards";
-import { formatUpdatedAt } from "../lib/format";
 import { usePlayerStore } from "../stores/player";
 import type { BoardInfo, LatestBoard, RankItem } from "../types";
 
@@ -115,10 +114,6 @@ function onPlay(item?: RankItem) {
             </div>
           </div>
         </div>
-        <p class="mt-3 text-xs text-zinc-500">
-          {{ formatUpdatedAt(latest?.fetched_at ?? latest?.updated_at) }}
-          · {{ latest?.items.length ?? 0 }} 首
-        </p>
       </div>
     </div>
   </article>

@@ -11,10 +11,7 @@ export function useStalePoll(intervalMs = 60_000): void {
       ...Object.keys(latest.value),
     ]);
     for (const id of ids) {
-      const board = latest.value[id];
-      if (!board || board.staleness !== "fresh" || !board.items.length) {
-        void store.refreshLatest(id);
-      }
+      void store.refreshLatestEntry(id);
     }
   }, intervalMs);
   onUnmounted(() => window.clearInterval(timer));

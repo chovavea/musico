@@ -8,8 +8,7 @@ RUN npm run build
 FROM python:3.12-alpine AS wheels
 WORKDIR /src
 ENV PYTHONDONTWRITEBYTECODE=1
-RUN apk add --no-cache --virtual .build-deps gcc musl-dev libffi-dev \
-    && pip install --no-cache-dir --prefix=/install \
+RUN pip install --no-cache-dir --prefix=/install \
       "fastapi>=0.115.0" \
       "uvicorn>=0.32.0" \
       "sqlalchemy[asyncio]>=2.0.36" \
@@ -19,9 +18,7 @@ RUN apk add --no-cache --virtual .build-deps gcc musl-dev libffi-dev \
       "httpx>=0.27.0" \
       "structlog>=24.4.0" \
       "apscheduler>=3.10.4" \
-      "pyyaml>=6.0.2" \
-    && apk del .build-deps \
-    && rm -rf /root/.cache/pip /var/cache/apk/*
+      "pyyaml>=6.0.2"
 
 FROM python:3.12-alpine
 WORKDIR /app/backend

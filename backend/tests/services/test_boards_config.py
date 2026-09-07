@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from app.services.boards_config import (
     BoardsConfigError,
     extra_errors,
@@ -87,6 +86,54 @@ boards:
         encoding="utf-8",
     )
     with pytest.raises(BoardsConfigError, match="overview_slot"):
+        parse_board_specs(load_raw_boards(path))
+
+
+def test_missing_overview_slot_is_fatal(tmp_path: Path) -> None:
+    path = tmp_path / "boards.yaml"
+    path.write_text(
+        """
+boards:
+  - id: qq_hot
+    platform: qqmusic
+    name: A
+    type: hot
+    enabled: true
+    overview_slot: left
+    interval_sec: 1800
+    extra: { top_id: 26 }
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(BoardsConfigError, match="exactly left and right"):
+        parse_board_specs(load_raw_boards(path))
+
+
+def test_disabled_overview_slot_does_not_satisfy_required_slots(tmp_path: Path) -> None:
+    path = tmp_path / "boards.yaml"
+    path.write_text(
+        """
+boards:
+  - id: qq_hot
+    platform: qqmusic
+    name: A
+    type: hot
+    enabled: true
+    overview_slot: left
+    interval_sec: 1800
+    extra: { top_id: 26 }
+  - id: netease_hot
+    platform: netease
+    name: B
+    type: hot
+    enabled: false
+    overview_slot: right
+    interval_sec: 1800
+    extra: { playlist_id: "1" }
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(BoardsConfigError, match="missing right"):
         parse_board_specs(load_raw_boards(path))
 
 

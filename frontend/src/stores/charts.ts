@@ -11,6 +11,9 @@ import {
 } from "../api";
 import type { BoardInfo, CatalogPlatform, LatestBoard, PlatformInfo } from "../types";
 
+/** 目录榜（非 yaml 配置）没有服务端快照，沿用后端 live_spec 的 1 小时刷新周期。 */
+const CATALOG_REFRESH_MS = 60 * 60 * 1000;
+
 export const useChartsStore = defineStore("charts", {
   state: () => ({
     boards: [] as BoardInfo[],
@@ -55,6 +58,36 @@ export const useChartsStore = defineStore("charts", {
         this.latest[boardId] = { ...res.data, board_id: boardId };
       }
     },
+    async ensureLatest(board: BoardInfo) {
+      if (this.latest[board.id]?.items.length) return;
+      if (board.id.startsWith("catalog:") && board.chart_key) {
+        await this.refreshCatalogLatest(board.platform, board.chart_key, board.id);
+        return;
+      }
+      await this.refreshLatest(board.id);
+    },
+    /**
+     * 轮询入口：yaml 榜单按服务端 staleness 判定；目录榜（catalog:）按拉取时间与 1 小时
+     * 周期判定，避免每分钟打无意义的 live 请求。
+     */
+    async refreshLatestEntry(id: string) {
+      const board = this.latest[id];
+      if (board?.staleness === "fresh" && board.items.length) return;
+      if (board) {
+        const fetchedAt = board.fetched_at ?? board.updated_at;
+        const ageMs = fetchedAt ? Date.now() - Date.parse(fetchedAt) : Number.NaN;
+        if (!Number.isNaN(ageMs) && ageMs < CATALOG_REFRESH_MS) return;
+      }
+      if (id.startsWith("catalog:")) {
+        const [, platform, ...rest] = id.split(":");
+        const chartKey = rest.join(":");
+        if (platform && chartKey) {
+          await this.refreshCatalogLatest(platform, chartKey, id);
+          return;
+        }
+      }
+      await this.refreshLatest(id);
+    },
     async moveBoard(id: string, direction: "up" | "down") {
       const res = await moveBoard(id, direction);
       if (res.code === 0 && Array.isArray(res.data)) {
@@ -74,14 +107,29 @@ export const useChartsStore = defineStore("charts", {
       this.error = res.msg || "调整顺序失败";
     },
     async reorderCatalogChart(platform: string, chartKey: string, beforeKey: string | null) {
-      const res = await reorderCatalogChart(platform, chartKey, beforeKey);
-      if (res.code === 0 && res.data?.groups) {
-        this.catalog = this.catalog.map((item) =>
-          item.id === platform ? { ...item, groups: res.data.groups } : item,
-        );
-        return;
+      try {
+        const res = await reorderCatalogChart(platform, chartKey, beforeKey);
+        if (res.code === 0 && res.data?.groups) {
+          this.catalog = this.catalog.map((item) =>
+            item.id === platform ? { ...item, groups: res.data.groups } : item,
+          );
+          this.error = "";
+          return true;
+        }
+        this.error = res.msg || "调整顺序失败";
+      } catch {
+        this.error = "调整顺序失败，请重试";
       }
-      this.error = res.msg || "调整顺序失败";
+      try {
+        await this.loadCatalog();
+      } catch {
+        // 重排与回拉都失败时，重建该平台 groups 引用，通知下拉清除乐观状态，
+        // 列表立即回到服务端顺序而不是停留在本地假顺序。
+        this.catalog = this.catalog.map((item) =>
+          item.id === platform ? { ...item, groups: [...item.groups] } : item,
+        );
+      }
+      return false;
     },
     async refreshAll() {
       this.loading = true;

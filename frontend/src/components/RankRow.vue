@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { RankItem } from "../types";
+import { rowGridClass } from "../lib/list-grid";
 import { usePlayerStore } from "../stores/player";
 
 const props = defineProps<{ item: RankItem; queue?: RankItem[] }>();
@@ -47,8 +48,8 @@ function onPlay() {
 <template>
   <button
     type="button"
-    class="group grid min-h-[52px] w-full grid-cols-[2.25rem_2.75rem_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-white/5"
-    :class="active ? 'bg-zinc-50 dark:bg-white/5' : ''"
+    class="group min-h-[52px] w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-white/5"
+    :class="[rowGridClass, active ? 'bg-zinc-50 dark:bg-white/5' : '']"
     @click="onPlay"
   >
     <div class="tabular text-right font-semibold" :class="rankKlass">
@@ -75,7 +76,7 @@ function onPlay() {
       <div class="truncate text-sm text-zinc-500 dark:text-zinc-400">{{ item.artist }}</div>
     </div>
     <div class="flex items-center gap-2 text-sm">
-      <span class="tabular hidden text-zinc-400 sm:inline">{{ Math.round(item.normalized_score) }}</span>
+      <span class="tabular hidden w-8 shrink-0 text-right text-zinc-400 sm:inline">{{ Math.round(item.normalized_score) }}</span>
       <span class="rounded-full px-2 py-0.5 text-xs" :class="delta.klass">{{ delta.text }}</span>
       <span
         class="grid h-11 min-w-11 place-items-center rounded-full bg-zinc-900 px-3 text-xs text-white dark:bg-white dark:text-zinc-900"

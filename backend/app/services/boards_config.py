@@ -78,6 +78,20 @@ def parse_board_specs(raw_boards: list[dict[str, Any]]) -> list[BoardSpec]:
     slots = [spec.overview_slot for spec in specs if spec.overview_slot]
     if len(slots) != len(set(slots)):
         raise BoardsConfigError("overview_slot left/right must be unique")
+    enabled_slots = {spec.overview_slot for spec in specs if spec.enabled and spec.overview_slot}
+    required_slots = {"left", "right"}
+    if enabled_slots != required_slots:
+        missing = ", ".join(sorted(required_slots - enabled_slots))
+        extra_slots = ", ".join(sorted(enabled_slots - required_slots))
+        details = []
+        if missing:
+            details.append(f"missing {missing}")
+        if extra_slots:
+            details.append(f"unexpected {extra_slots}")
+        raise BoardsConfigError(
+            "enabled overview_slot must contain exactly left and right"
+            + (f" ({'; '.join(details)})" if details else "")
+        )
     return specs
 
 
