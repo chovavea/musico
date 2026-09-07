@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.adapters.http.middleware import RequestIdMiddleware
 from app.adapters.http.routes import build_router
@@ -26,6 +26,25 @@ from app.services.collect import CollectService
 from app.settings import Settings, get_settings
 
 log = structlog.get_logger(__name__)
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serve the Vue entrypoint for client-side routes while preserving asset 404s."""
+
+    async def get_response(self, path: str, scope: dict) -> object:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            normalized_path = path.replace("\\", "/").lstrip("/")
+            if (
+                exc.status_code == 404
+                and scope.get("method") in {"GET", "HEAD"}
+                and not Path(path).suffix
+                and normalized_path not in {"api", "api/"}
+                and not normalized_path.startswith("api/")
+            ):
+                return await super().get_response("index.html", scope)
+            raise
 
 
 def _resolve_boards_path(settings: Settings) -> Path:
@@ -128,6 +147,6 @@ def create_app(
 
     dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if dist.is_dir():
-        app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
+        app.mount("/", SPAStaticFiles(directory=str(dist), html=True), name="frontend")
 
     return app

@@ -73,7 +73,7 @@ function onSeekEnd() {
                   : player.usingOfficial
                     ? "QQ 官方播放器试听"
                     : player.current.artist
-                : "点试听或播放本榜，有官方预览的会在这里连播"
+                : "点击试听或播放本榜"
             }}
           </div>
         </div>
