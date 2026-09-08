@@ -17,10 +17,20 @@ async function getJson<T>(url: string): Promise<Envelope<T>> {
 async function sendJson<T>(url: string, init?: RequestInit): Promise<Envelope<T>> {
   const response = await fetch(url, init);
   const text = await response.text();
-  if (!text) {
-    throw new Error("接口无响应，稍后重试");
+  if (text) {
+    try {
+      const envelope = JSON.parse(text) as Partial<Envelope<T>>;
+      if (typeof envelope.code === "number") {
+        return envelope as Envelope<T>;
+      }
+    } catch {
+      // Non-JSON upstream error body (proxy / gateway HTML, etc.)
+    }
   }
-  return JSON.parse(text) as Envelope<T>;
+  if (!response.ok) {
+    throw new Error(`服务暂时不可用（HTTP ${response.status}）`);
+  }
+  throw new Error("接口无响应，稍后重试");
 }
 
 export function listPlatforms(): Promise<Envelope<PlatformInfo[]>> {

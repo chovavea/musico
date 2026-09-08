@@ -11,11 +11,15 @@ from app.settings import Settings
 
 
 class DownloadService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession], settings: Settings) -> None:
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], settings: Settings
+    ) -> None:
         self._session_factory = session_factory
         self._settings = settings
 
-    async def request(self, track: TrackRef, requested_quality: AudioQuality | None = None) -> dict[str, Any]:
+    async def request(
+        self, track: TrackRef, requested_quality: AudioQuality | None = None
+    ) -> dict[str, Any]:
         key = task_idempotency_key(track)
         async with self._session_factory() as session:
             repo = LibraryRepository(session)
@@ -25,29 +29,23 @@ class DownloadService:
                 path = self._asset_path(asset.relative_path)
                 if path.is_file():
                     await session.commit()
-                    return {"state": "ready", "asset": repo._asset_payload(asset, library_track)}
+                    return {"state": "ready", "asset": repo.asset_payload(asset, library_track)}
                 await repo.mark_asset_missing(asset)
+                asset = None
             existing = await repo.get_task_by_idempotency(key)
             if existing is None:
-                existing = await repo.create_task(
+                existing = await repo.get_or_create_task(
                     library_track.id,
                     key,
                     max_attempts=max(1, self._settings.download_max_retries),
                     requested_quality=requested_quality,
                 )
             elif existing.status == "completed" and asset is None:
-                existing.status = "resolving"
-                existing.attempt_count = 0
-                existing.bytes_done = 0
-                existing.bytes_total = None
-                existing.next_retry_at = None
-                existing.last_error = None
-                existing.completed_at = None
-                existing.candidate_snapshot = None
+                await repo.reset_task(existing)
             await session.commit()
             return {
                 "state": "queued" if existing.status == "resolving" else existing.status,
-                "task": repo._task_payload(existing, library_track),
+                "task": repo.task_payload(existing, library_track),
             }
 
     async def retry(self, task_id: str) -> dict[str, Any] | None:
@@ -58,7 +56,7 @@ class DownloadService:
                 return None
             if task.status == "completed":
                 track = await repo.get_track(task.library_track_id)
-                return repo._task_payload(task, track)
+                return repo.task_payload(task, track)
             task.status = "queued"
             task.attempt_count = 0
             task.next_retry_at = None
@@ -66,7 +64,7 @@ class DownloadService:
             task.completed_at = None
             task.heartbeat_at = None
             await session.commit()
-            return repo._task_payload(task, None)
+            return repo.task_payload(task, None)
 
     async def assets(self) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
@@ -83,7 +81,7 @@ class DownloadService:
             if task is None:
                 return None
             track = await repo.get_track(task.library_track_id)
-            return repo._task_payload(task, track)
+            return repo.task_payload(task, track)
 
     async def summary(self) -> dict[str, Any]:
         async with self._session_factory() as session:

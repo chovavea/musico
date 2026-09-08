@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     boards_yaml: Path = Field(default=Path("/app/configs/boards.yaml"), alias="BOARDS_YAML")
     http_timeout_sec: float = Field(default=15.0, alias="HTTP_TIMEOUT_SEC")
+    api_token: str = Field(default="", alias="API_TOKEN")
     latest_cache_ttl_sec: int = Field(default=45, alias="LATEST_CACHE_TTL_SEC")
     music_library_dir: Path = Field(default=Path("/app/data/music"), alias="MUSIC_LIBRARY_DIR")
     download_source_config: Path = Field(

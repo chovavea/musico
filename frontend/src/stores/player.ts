@@ -37,6 +37,11 @@ function isQQOfficial(item: RankItem | null): boolean {
   return item?.platform === "qqmusic" && !hasLocalAsset(item);
 }
 
+function sameAudioSource(audio: HTMLAudioElement, item: RankItem): boolean {
+  const expected = new URL(streamUrl(item), document.baseURI).href;
+  return audio.src === expected;
+}
+
 export const usePlayerStore = defineStore("player", {
   state: () => ({
     current: null as RankItem | null,
@@ -68,11 +73,12 @@ export const usePlayerStore = defineStore("player", {
         this.next();
       });
       audio.addEventListener("error", () => {
-        if (
-          !this.current ||
-          isQQOfficial(this.current) ||
-          !audio.src.includes(encodeURIComponent(this.current.external_id))
-        ) {
+        if (!this.current || isQQOfficial(this.current)) {
+          return;
+        }
+        // 本地曲库走 /library/{asset_id}/stream，不包含 external_id，
+        // 因此按 streamUrl 生成的完整源地址匹配，避免错误被静默吞掉。
+        if (!sameAudioSource(audio, this.current)) {
           return;
         }
         this.playing = false;

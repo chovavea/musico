@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
+from urllib.parse import urljoin
 
 import httpx
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 
+from app.adapters.http.safety import (
+    MAX_HOPS,
+    REDIRECT_STATUSES,
+    assert_outbound_url_allowed,
+    host_matches,
+)
 from app.domain.models import TrackRef
+
+log = logging.getLogger(__name__)
 
 _ALLOWED_SUFFIXES = (
     "music.163.com",
@@ -25,8 +35,7 @@ _PASSTHROUGH = (
 
 
 def host_allowed(host: str) -> bool:
-    cleaned = host.lower().rstrip(".")
-    return any(cleaned == suffix or cleaned.endswith(f".{suffix}") for suffix in _ALLOWED_SUFFIXES)
+    return host_matches(host, _ALLOWED_SUFFIXES)
 
 
 async def stream_official_preview(
@@ -35,7 +44,7 @@ async def stream_official_preview(
     external_id: str,
 ) -> StreamingResponse:
     registry = request.app.state.registry
-    client: httpx.AsyncClient = request.app.state.http_client
+    client: httpx.AsyncClient = request.app.state.preview_client
     record = registry.get(platform)
     if record is None or record.preview is None:
         return StreamingResponse(iter(()), status_code=404)
@@ -49,9 +58,6 @@ async def stream_official_preview(
     )
     if not info.preview_url:
         return StreamingResponse(iter(()), status_code=404)
-    parsed = httpx.URL(info.preview_url)
-    if not host_allowed(parsed.host or ""):
-        return StreamingResponse(iter(()), status_code=404)
     headers: dict[str, str] = {}
     range_header = request.headers.get("range")
     if range_header:
@@ -60,10 +66,29 @@ async def stream_official_preview(
         headers["Referer"] = "https://music.163.com/"
     elif platform == "qqmusic":
         headers["Referer"] = "https://y.qq.com"
-    upstream = await client.send(
-        client.build_request("GET", info.preview_url, headers=headers),
-        stream=True,
-    )
+    url = info.preview_url
+    # The dedicated preview client never auto-follows redirects; every hop is
+    # re-checked against the host allowlist and private-IP rules.
+    for _hop in range(MAX_HOPS):
+        try:
+            await assert_outbound_url_allowed(url, _ALLOWED_SUFFIXES)
+        except ValueError as exc:
+            log.warning("preview_url_rejected", url_host=httpx.URL(url).host, error=str(exc))
+            return StreamingResponse(iter(()), status_code=404)
+        upstream = await client.send(
+            client.build_request("GET", url, headers=headers),
+            stream=True,
+        )
+        if upstream.status_code in REDIRECT_STATUSES:
+            location = upstream.headers.get("location")
+            await upstream.aclose()
+            if not location:
+                return StreamingResponse(iter(()), status_code=404)
+            url = urljoin(str(upstream.url), location)
+            continue
+        break
+    else:
+        return StreamingResponse(iter(()), status_code=404)
     if upstream.status_code >= 400:
         await upstream.aclose()
         return StreamingResponse(iter(()), status_code=404)

@@ -35,6 +35,14 @@ function choose(dark: boolean) {
   theme.setDark(dark);
 }
 
+function toggle() {
+  open.value = !open.value;
+  if (open.value) {
+    // 空闲时轮询已停止；打开菜单时刷新一次任务/曲库计数。
+    void downloads.refreshSummary();
+  }
+}
+
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onDocKey);
@@ -57,7 +65,7 @@ onUnmounted(() => {
       :aria-expanded="open"
       aria-haspopup="dialog"
       aria-label="配置"
-      @click.stop="open = !open"
+      @click.stop="toggle()"
     >
       <svg v-if="!downloads.active" viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor" aria-hidden="true">
         <rect x="4" y="6" width="16" height="2.2" rx="1.1" />

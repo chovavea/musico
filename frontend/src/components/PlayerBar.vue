@@ -30,27 +30,56 @@ function onSeekPointer(event: PointerEvent) {
 function onSeekEnd() {
   dragging.value = false;
 }
+
+function seekBy(delta: number) {
+  if (!player.duration) return;
+  player.seek(Math.min(1, Math.max(0, player.progress + delta)));
+}
+
+function onSeekKey(event: KeyboardEvent) {
+  if (!player.current || !player.duration) return;
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    seekBy(0.05);
+  } else if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    seekBy(-0.05);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    player.seek(0);
+  } else if (event.key === "End") {
+    event.preventDefault();
+    player.seek(1);
+  }
+}
 </script>
 
 <template>
   <footer
     class="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-200 bg-white/80 pb-[env(safe-area-inset-bottom,0px)] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/70"
   >
-    <button
-      type="button"
-      class="relative flex h-8 w-full touch-none items-center"
-      :disabled="!player.current || !player.duration"
+    <div
+      role="slider"
+      tabindex="0"
+      class="relative flex h-8 w-full cursor-pointer touch-none items-center focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-zinc-400 dark:focus-visible:outline-zinc-600"
+      :class="!player.current || !player.duration ? 'cursor-default' : ''"
+      aria-label="播放进度"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="Math.round(player.progress * 100)"
+      :aria-disabled="!player.current || !player.duration"
       @pointerdown="onSeekPointer"
       @pointermove="onSeekPointer"
       @pointerup="onSeekEnd"
       @pointercancel="onSeekEnd"
+      @keydown="onSeekKey"
     >
       <span class="absolute inset-x-0 h-1 bg-zinc-200 dark:bg-zinc-800" />
       <span
         class="absolute left-0 h-1 bg-zinc-900 dark:bg-white"
         :style="{ width: `${percent}%` }"
       />
-    </button>
+    </div>
     <div
       class="mx-auto flex max-w-7xl flex-col gap-1 px-4 pb-2 pt-1 md:flex-row md:items-center md:gap-4 md:py-3"
     >
