@@ -51,6 +51,20 @@ npm run dev
 
 不必改下载队列或 FastAPI 路由。
 
+## 安全与暴露边界
+
+- **下载与试听不自动跟随重定向**：下载 worker 和官方试听代理在每次跳转后重新校验主机白名单（来自 `plugin.toml` / 内置后缀表），并拒绝解析到私有、环回或链路本地地址的目标，防止 302 到内网或云元数据地址（SSRF）。
+- **可选 API Token**：设置 `API_TOKEN` 后，所有 `POST` / `DELETE` / 其他写操作的 `/api/v1/*` 请求必须携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，否则返回 401。示例：
+  ```bash
+  curl -X POST http://127.0.0.1:8080/api/v1/downloads \
+    -H "Authorization: Bearer $API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"platform":"qqmusic","external_id":"xxx","title":"晴天","artist":"周杰伦"}'
+  ```
+  读接口（榜单、健康检查、曲库列表/试听）默认不鉴权；浏览器访问整套 UI 时建议在前面加一层反向代理认证，并仅在内网或本机暴露（默认 `docker compose` 将 `8080` 绑到所有网卡，可改为 `127.0.0.1:8080:8080`）。
+- **下载 worker 是单实例设计**：`.part` 续传文件与任务租约强相关，当前数据库租约只保护写库、不保护同一任务跨进程写同一磁盘文件；请勿对 musico 服务水平扩容多个副本，也不要为同一 `MUSIC_LIBRARY_DIR` 挂载启动第二个 worker。
+- 榜单抓取与下载使用独立的 HTTP 客户端与连接池，长连接大文件不会拖慢抓榜/健康检查；预览与下载各有独立的读超时。
+
 ## 完成定义
 
 - `docker compose up -d` 后 Alembic 自动建表

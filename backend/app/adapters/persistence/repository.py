@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.persistence.models import (
@@ -20,8 +21,8 @@ from app.adapters.persistence.models import (
     RankEntryRow,
     RankSnapshotRow,
 )
-from app.domain.models import BoardSpec, RawRankItem
 from app.domain.matching import artist_key, normalize_text
+from app.domain.models import BoardSpec, RawRankItem
 from app.domain.normalize import normalized_score
 
 
@@ -246,7 +247,7 @@ class ChartRepository:
                 item["library_status"] = asset.status if asset else None
                 item["library_asset_id"] = asset.id if asset else None
                 item["active_download_id"] = task.id if task else None
-        except Exception:
+        except SQLAlchemyError:
             # Library tables are introduced by a later migration; chart reads remain usable
             # during an in-place upgrade or when running the chart-only test fixtures.
             return

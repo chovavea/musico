@@ -133,6 +133,7 @@ def build_router() -> APIRouter:
             spec.interval_sec,
             request.app.state.settings.staleness_multiplier,
         )
+        cache[f"latest:{board_id}"] = {"ts": now_ts, "data": payload}
         return ok(payload)
 
     @router.get("/catalog")

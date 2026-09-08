@@ -38,8 +38,8 @@ def is_auto_match(left: TrackRef, right: TrackRef) -> bool:
     return track_match_score(left, right) >= 0.9
 
 
-def track_key(track: TrackRef) -> str:
-    identity = "|".join(
+def track_identity(track: TrackRef) -> str:
+    return "|".join(
         (
             track.isrc.casefold() if track.isrc else "",
             normalize_text(track.title),
@@ -47,4 +47,12 @@ def track_key(track: TrackRef) -> str:
             str(track.duration_ms or ""),
         )
     )
-    return sha256(identity.encode("utf-8")).hexdigest()
+
+
+def track_key(track: TrackRef) -> str:
+    return sha256(track_identity(track).encode("utf-8")).hexdigest()
+
+
+def track_identity_key(track: TrackRef) -> str:
+    """Return a bounded, deterministic key suitable for a database unique index."""
+    return track_key(track)

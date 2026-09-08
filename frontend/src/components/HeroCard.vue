@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { downloadActionState, useTrackDownload } from "../composables/useTrackDownload";
 import { useCoverPalette } from "../composables/useCoverTint";
 import { chartShortName, platformLabel } from "../lib/boards";
 import { usePlayerStore } from "../stores/player";
@@ -7,6 +8,7 @@ import type { BoardInfo, LatestBoard, RankItem } from "../types";
 
 const props = defineProps<{ board: BoardInfo; latest?: LatestBoard }>();
 const player = usePlayerStore();
+const download = useTrackDownload();
 
 const topFive = computed(() => props.latest?.items.slice(0, 5) ?? []);
 const top = computed(() => topFive.value[0]);
@@ -20,10 +22,35 @@ function rankKlass(rank: number): string {
   return "text-zinc-500";
 }
 
+function isCurrent(item: RankItem): boolean {
+  return (
+    player.current?.platform === item.platform &&
+    player.current?.external_id === item.external_id
+  );
+}
+
 function onPlay(item?: RankItem) {
   if (item) {
     player.play(item, props.latest?.items ?? topFive.value);
   }
+}
+
+function downloadLabel(item: RankItem): string {
+  const state = downloadActionState(item);
+  if (state === "ready") return "已下载";
+  if (state === "queued") return "队列中";
+  return "下载";
+}
+
+function downloadClass(item: RankItem): string {
+  const state = downloadActionState(item);
+  if (state === "ready") return "text-emerald-600 dark:text-emerald-300";
+  if (state === "queued") return "text-amber-600 dark:text-amber-300";
+  return "text-zinc-500";
+}
+
+function onDownload(item: RankItem) {
+  void download.enqueue(item);
 }
 </script>
 
@@ -52,6 +79,7 @@ function onPlay(item?: RankItem) {
         class="relative h-28 w-28 shrink-0 overflow-hidden rounded-2xl shadow-lg sm:h-36 sm:w-36 sm:rounded-3xl md:h-44 md:w-44"
         :style="{ backgroundColor: palette.bg }"
         :disabled="!top"
+        :aria-label="top ? `播放 ${top.title} · ${top.artist}` : undefined"
         @click="onPlay(top)"
       >
         <img
@@ -81,28 +109,41 @@ function onPlay(item?: RankItem) {
         </div>
         <ol v-if="topFive.length" class="mt-3 space-y-1">
           <li v-for="item in topFive" :key="item.external_id">
-            <button
-              type="button"
-              class="grid min-h-11 w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 rounded-xl px-1.5 py-1.5 text-left hover:bg-[var(--hero-hover)]"
-              :class="
-                player.current?.platform === item.platform &&
-                player.current?.external_id === item.external_id
-                  ? 'bg-[var(--hero-active)]'
-                  : ''
-              "
-              @click="onPlay(item)"
+            <div
+              class="group relative grid min-h-11 w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 rounded-xl px-1.5 py-1.5 text-left hover:bg-[var(--hero-hover)]"
+              :class="isCurrent(item) ? 'bg-[var(--hero-active)]' : ''"
             >
-              <span class="tabular text-right text-sm font-semibold" :class="rankKlass(item.rank)">
+              <button
+                type="button"
+                class="absolute inset-0 z-0 rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-zinc-400 dark:focus-visible:outline-zinc-600"
+                :aria-label="`播放 ${item.title} · ${item.artist}`"
+                @click="onPlay(item)"
+              />
+              <span class="pointer-events-none tabular text-right text-sm font-semibold" :class="rankKlass(item.rank)">
                 {{ item.rank }}
               </span>
-              <span class="min-w-0">
+              <span class="pointer-events-none min-w-0">
                 <span class="block truncate text-sm font-medium">{{ item.title }}</span>
                 <span class="block truncate text-xs text-zinc-500 dark:text-zinc-400">
                   {{ item.artist }}
                 </span>
               </span>
-              <span class="text-xs text-zinc-500">试听</span>
-            </button>
+              <span class="relative z-10 pointer-events-auto">
+                <button
+                  type="button"
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-full hover:bg-[var(--hero-hover)]"
+                  :class="downloadClass(item)"
+                  :aria-label="downloadLabel(item)"
+                  :title="downloadLabel(item)"
+                  @click="onDownload(item)"
+                >
+                  <svg v-if="item.library_status !== 'ready'" viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                    <path d="M8 2.5v7m0 0 2.5-2.5M8 9.5 5.5 7M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  <span v-else aria-hidden="true">✓</span>
+                </button>
+              </span>
+            </div>
           </li>
         </ol>
         <div v-else class="mt-3 space-y-2">

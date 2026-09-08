@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
+    JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
-    JSON,
-    BigInteger,
     String,
     Text,
     UniqueConstraint,
@@ -31,9 +31,8 @@ LIBRARY_SCHEMA = "musico_library"
 
 
 def utcnow() -> datetime:
-    from datetime import timezone
 
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class PlatformRow(Base):
@@ -127,11 +126,13 @@ class CatalogChartOrderRow(Base):
 class LibraryTrackRow(LibraryBase):
     __tablename__ = "library_track"
     __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_library_track_identity_key"),
         Index("ix_library_track_identity", "normalized_title", "normalized_artist"),
         {"schema": LIBRARY_SCHEMA},
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     artist: Mapped[str] = mapped_column(String(512), nullable=False)
     album: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -140,8 +141,12 @@ class LibraryTrackRow(LibraryBase):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     isrc: Mapped[str | None] = mapped_column(String(64), nullable=True)
     version: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
 
 
 class LibrarySourceRefRow(LibraryBase):
@@ -164,7 +169,13 @@ class LibrarySourceRefRow(LibraryBase):
 class LibraryAssetRow(LibraryBase):
     __tablename__ = "library_asset"
     __table_args__ = (
-        UniqueConstraint("library_track_id", "format", "sample_rate_hz", "bit_depth", name="uq_library_asset_quality"),
+        UniqueConstraint(
+            "library_track_id",
+            "format",
+            "sample_rate_hz",
+            "bit_depth",
+            name="uq_library_asset_quality",
+        ),
         Index("ix_library_asset_track_status", "library_track_id", "status"),
         {"schema": LIBRARY_SCHEMA},
     )
@@ -212,7 +223,10 @@ class DownloadTaskRow(LibraryBase):
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
