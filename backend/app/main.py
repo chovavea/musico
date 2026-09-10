@@ -27,6 +27,7 @@ from app.plugins._registry import load_registry
 from app.services.boards_config import BoardsConfigError, load_raw_boards, parse_board_specs
 from app.services.collect import CollectService
 from app.services.downloads import DownloadService
+from app.services.preview_telemetry import prewarm as prewarm_preview_stats
 from app.settings import Settings, get_settings
 
 log = structlog.get_logger(__name__)
@@ -129,7 +130,9 @@ def create_app(
     # every hop is re-validated manually, and a stalled CDN cannot starve the
     # connection pool used by chart collection / health checks.
     preview_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(settings.http_timeout_sec, read=60.0),
+        # Preview calls must not be cut short by the generic HTTP timeout: a slow
+        # upstream still plays, so every phase gets the full per-call ceiling.
+        timeout=httpx.Timeout(settings.preview_call_timeout_sec),
         headers={"User-Agent": user_agent},
         follow_redirects=False,
         limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
@@ -164,9 +167,13 @@ def create_app(
         await _wait_for_database(engine)
         if run_migrations:
             _run_alembic(settings)
+            # Alembic re-applies alembic.ini logging via fileConfig; restore the
+            # application's structured logging before serving requests.
+            configure_logging(settings.log_level)
         async with session_factory() as session:
             await ChartRepository(session).upsert_catalog(specs, registry.platform_names())
             await session.commit()
+        await prewarm_preview_stats(session_factory)
         settings.music_library_dir.mkdir(parents=True, exist_ok=True)
         if scheduler is not None:
             scheduler.start()

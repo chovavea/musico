@@ -131,14 +131,25 @@ def _parse_item(raw: object, rank: int) -> RawRankItem | None:
         artist = "未知"
     album = raw.get("al") or raw.get("album") or {}
     cover = album.get("picUrl") if isinstance(album, dict) else None
+    album_name = album.get("name") if isinstance(album, dict) else None
     return RawRankItem(
         rank=rank,
         external_id=str(song_id),
         title=str(title),
         artist=artist,
+        album=str(album_name) if album_name else None,
+        duration_ms=_duration_ms(raw),
         cover_url=str(cover) if cover else None,
         official_url=f"https://music.163.com/song?id={song_id}",
     )
+
+
+def _duration_ms(raw: dict[str, Any]) -> int | None:
+    for field in ("dt", "duration"):
+        value = raw.get(field)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
 
 
 def create_chart(client: httpx.AsyncClient) -> NeteaseCharts:

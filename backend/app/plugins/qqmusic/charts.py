@@ -175,11 +175,20 @@ def _parse_item(
         external_id=str(songmid),
         title=str(title),
         artist=artist,
+        duration_ms=_duration_ms(data),
         cover_url=cover,
         official_url=f"https://y.qq.com/n/ryqq/songDetail/{songmid}",
         raw_score=raw_score,
         preview_url=preview or None,
     )
+
+
+def _duration_ms(data: dict[str, Any]) -> int | None:
+    # The toplist API reports the song length in whole seconds.
+    interval = data.get("interval")
+    if isinstance(interval, int) and interval > 0:
+        return interval * 1000
+    return None
 
 
 def _optional_float(value: object) -> float | None:

@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 import structlog
@@ -18,6 +18,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.adapters.http.safety import MAX_HOPS, REDIRECT_STATUSES, assert_outbound_url_allowed
+from app.adapters.http.safety import (
+    headers_for_redirect as _headers_for_cross_origin_redirect,
+)
 from app.adapters.persistence.library_repository import LeaseLostError, LibraryRepository
 from app.adapters.persistence.models import (
     DownloadAttemptRow,
@@ -33,20 +36,6 @@ from app.settings import Settings
 UrlGuard = Callable[[str, Sequence[str]], Awaitable[None]]
 
 log = structlog.get_logger(__name__)
-
-_CROSS_ORIGIN_SENSITIVE_HEADERS = (
-    "key",
-    "token",
-    "secret",
-    "password",
-    "credential",
-    "authorization",
-    "cookie",
-    "private",
-    "certificate",
-    "signing",
-)
-
 
 class DownloadWorker:
     def __init__(
@@ -335,10 +324,7 @@ class DownloadWorker:
                         headers.pop("Range", None)
                         part_path.unlink(missing_ok=True)
                     next_url = urljoin(str(response.url), location)
-                    if not _same_origin(url, next_url):
-                        headers = _headers_for_cross_origin_redirect(
-                            headers, url, next_url
-                        )
+                    headers = _headers_for_cross_origin_redirect(headers, url, next_url)
                     url = next_url
                     continue
                 if status >= 400:
@@ -504,39 +490,6 @@ def _track_from_row(row: LibraryTrackRow) -> TrackRef:
 
 def _now():
     return datetime.now(UTC)
-
-
-def _origin(url: str) -> tuple[str, str, int | None]:
-    parsed = urlparse(url)
-    scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower().rstrip(".")
-    if parsed.port is not None:
-        port = parsed.port
-    elif scheme == "http":
-        port = 80
-    elif scheme == "https":
-        port = 443
-    else:
-        port = None
-    return scheme, hostname, port
-
-
-def _same_origin(left: str, right: str) -> bool:
-    return _origin(left) == _origin(right)
-
-
-def _headers_for_cross_origin_redirect(
-    headers: dict[str, str], previous_url: str, next_url: str
-) -> dict[str, str]:
-    """Drop credentials and connection-specific headers before changing origin."""
-    if _same_origin(previous_url, next_url):
-        return headers
-    return {
-        name: value
-        for name, value in headers.items()
-        if name.lower() not in {"host", "proxy-authorization"}
-        and not any(marker in name.lower() for marker in _CROSS_ORIGIN_SENSITIVE_HEADERS)
-    }
 
 
 def _write_and_hash(output: BinaryIO, chunk: bytes, digest: Any) -> None:

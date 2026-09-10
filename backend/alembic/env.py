@@ -12,7 +12,9 @@ database_url = os.environ.get("DATABASE_URL")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep the application's structured logging: this runs inside the app's
+    # lifespan and must not disable or re-level the loggers it already set up.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = [Base.metadata, LibraryBase.metadata]
 

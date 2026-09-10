@@ -14,6 +14,7 @@ from app.domain.models import BoardSpec
 from app.ports.chart import ChartPort
 from app.ports.media import MediaPort
 from app.ports.preview import PreviewPort
+from app.ports.search import SearchPort
 from app.services.boards_config import extra_errors
 
 log = structlog.get_logger(__name__)
@@ -28,6 +29,7 @@ class PluginRecord:
     chart: ChartPort | None = None
     preview: PreviewPort | None = None
     media: MediaPort | None = None
+    search: SearchPort | None = None
 
 
 @dataclass
@@ -80,6 +82,10 @@ def load_registry(client: httpx.AsyncClient) -> PluginRegistry:
             module = importlib.import_module(f"{package}.media")
             factory = getattr(module, "create_media")
             record.media = factory(client)
+        if "search" in capabilities:
+            module = importlib.import_module(f"{package}.search")
+            factory = getattr(module, "create_search")
+            record.search = factory(client)
         registry.plugins[plugin_id] = record
         log.info("plugin_loaded", plugin_id=plugin_id, capabilities=capabilities)
     return registry

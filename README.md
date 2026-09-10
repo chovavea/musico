@@ -11,6 +11,8 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+应用设置全部写在 `.env`（compose 用 `env_file` 整份注入容器），新增开关不需要改 `docker-compose.yml`；只有描述容器本身的值（`DATABASE_URL`、`BOARDS_YAML`、`MUSIC_LIBRARY_DIR`、`DOWNLOAD_SOURCE_*`、`TZ`）由 compose 覆盖。改 `.env` 后需要 `docker compose up -d` 重建容器（不是 `restart`）。
+
 应用镜像目标 < 200MB（Alpine 多阶段）。若 `docker compose` 拉官方镜像超时，可先从镜像站拉取再打官方 tag，例如：
 
 ```bash
@@ -35,11 +37,26 @@ npm run dev
 
 ## 下载源插件
 
-下载源位于 `backend/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态和优先级写在 `configs/download_sources.yaml`，修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。
+下载源位于 `backend/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态、优先级和站点地址写在 `configs/download_sources.yaml`（`config.base_url`），修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。若换镜像站，把 `config.base_url` 改成新域名即可，必要时再加同级 `hosts` 作为额外允许的下载主机。
 
 核心负责歌曲匹配、最高质量选择、单任务队列、重试、断点续传、SHA-256 校验和文件入库。下载源只实现 `search` 和 `resolve`，不直接操作文件。
 
 音乐文件默认写入 `data/music/`，容器部署时通过 `MUSIC_LIBRARY_DIR` 修改。PostgreSQL 中的 `musico_library` schema 保存曲目、文件引用和下载任务，不保存音频二进制。
+
+## 试听回退
+
+按固定四档顺序尝试，每档都失败才进入下一档：**本地曲库** → **原平台官方试听** → **其他平台官方试听** → **下载源插件**（只出试听流，不建下载任务）。整条链路串行，同一时刻最多一条出站请求。QQ 官方播放器报错或 12 秒内未开始播放时进入这个档位，不再直接跳到下载源。
+
+- 跨平台档**按顺序逐个平台请求，不并发**：平台之间按「该平台组合的历史可播率 → 平台 id」排序（不设静态平台优先级），先搜第一个平台、解析试听地址、打开音频流，只有这一步没出音才去问下一个平台；同一时刻最多只有一条出站请求。可播率是 Beta 后验 `(成功 + 1) / (总数 + 2)`，样本不足时先退化为按目标平台聚合、再退化为全局，冷启动各平台同为 0.5。**样本判定**：本次出音的那个平台记成功，被问过却没能出音的平台（搜到候选但打不开、候选全被匹配守卫拒掉、搜索返回空）逐个记失败，所以只会失败的平台会被逐步降权；搜索自身抛错或超时的平台不计样本，避免一次网络抖动误伤正常平台。
+- 跨平台匹配校验：标题与时长必须一致（阈值 `PREVIEW_MATCH_MIN_SCORE`，默认 0.94，ISRC 命中直接放行），主歌手必须匹配，原曲不含版本词而候选含 Live / 伴奏 / Remix / 现场 / 翻唱等版本词时直接拒绝，避免听到 Live 或翻唱。
+- 平台内部候选按「匹配分 → 搜索排名」排序，最多试 `PREVIEW_MAX_CANDIDATES` 个；第一个通过「首字节非空且不是 HTML」检查的即本次播放源，后面的平台就不会再被请求。搜索与解析不再套用旧的 3 秒单次超时（慢但正确的平台不该被判成不可播），出站调用的两个旋钮都按 1 分钟给：单次调用上限 `PREVIEW_CALL_TIMEOUT_SEC`（默认 60，作用于预览 HTTP 客户端、打开音频、T3 搜索/解析），整段跨平台预算 `PREVIEW_DEADLINE_SEC`（默认 60）。预算耗尽且没拿到任何音频时直接落到下载源档，且**不会**写不可播缓存（超时不能证明这首歌放不出来）。结果按 `platform:external_id` 缓存：可播 10 分钟、不可播 3 分钟；缓存的签名地址打不开时立即废弃该条并重新搜索。
+- 缓存命中只是重放上一次已经记过账的决定：命中时不再往可播率里投票、也不再落 `preview_event` 行（同一次上游成功不能被同一次点击重复计数），只写一条 `cached=true` 的结构化日志。
+- 每次点击都会在 `musico_library.preview_event` 落行（档位、来源平台、匹配分、耗时、状态、错误）：除了本次选中的源，跨平台档里每个被问过但没出音的目标平台也会各落一行 `tier=T2 / status=error`，用于排查「这次到底用了哪个源、为什么没播」；`musico_library.preview_source_stat` 是启动时按近 7 天事件刷新的聚合表（成功与失败都计入）。这些记录只用于排查，**前端不展示来源**。
+- 下载源档**同样是逐个站点串行，不并发**：把全部**已启用**的下载源按优先级排序，先用优先级最高的源搜索（按歌名、歌手及可用的时长等信息匹配歌曲），命中的候选再按「浏览器支持且较轻量的格式 → 采样率 → 位深」逐个尝试，跳过 DSD 等不能直接试听的格式；只有这个源一个都放不出音，才去问下一个源。某个站点搜索、解析或打开音源失败不会阻断其他站点。
+- 回退音频直接流式播放，支持暂停和拖动进度，**不会创建下载任务或自动加入曲库**。所有候选均不可用时显示无可用音源提示。
+- 试听失败时保持当前曲目选中并显示提示，不会静默跳到下一首；需要继续时用播放器的“下一首”或重新点击其他曲目。
+- 下载源站点限制匿名访问时（例如 aries 每日免费额度用尽后返回“今日访问已达限额”），该站点按无候选处理并记录 `download_source_access_limited` 日志，其余下载源仍会继续尝试。
+- 新增并启用下载源插件后会自动参与试听回退；平台插件只要在 `plugin.toml` 声明 `search` 和 `preview` 能力就会自动成为跨平台试听来源，核心不写平台分支。
 
 ## 加第三个平台
 
@@ -49,11 +66,11 @@ npm run dev
 4. 在 `configs/boards.yaml` 加一行，`platform` 对应该 `id`
 5. 加一份录制 JSON fixture 单测
 
-不必改下载队列或 FastAPI 路由。
+想让新平台参与跨平台试听回退，再加一个 `search.py`（导出 `create_search`）并在 `plugin.toml` 的 `capabilities` 里声明 `"search"`；核心会自动把它列为试听来源。不必改下载队列或 FastAPI 路由。
 
 ## 安全与暴露边界
 
-- **下载与试听不自动跟随重定向**：下载 worker 和官方试听代理在每次跳转后重新校验主机白名单（来自 `plugin.toml` / 内置后缀表），并拒绝解析到私有、环回或链路本地地址的目标，防止 302 到内网或云元数据地址（SSRF）。
+- **下载与试听不自动跟随重定向**：下载 worker、官方试听及下载站点试听代理在每次跳转后重新校验主机白名单（来自 `plugin.toml` / 内置后缀表），并拒绝解析到私有、环回或链路本地地址的目标，防止 302 到内网或云元数据地址（SSRF）。跨站跳转时不转发敏感请求头。
 - **可选 API Token**：设置 `API_TOKEN` 后，所有 `POST` / `DELETE` / 其他写操作的 `/api/v1/*` 请求必须携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，否则返回 401。示例：
   ```bash
   curl -X POST http://127.0.0.1:8080/api/v1/downloads \
@@ -70,4 +87,5 @@ npm run dev
 - `docker compose up -d` 后 Alembic 自动建表
 - 两榜入库后 `/api/v1/health` 为 `ready`
 - `frontend` 的 `npm run build` 通过
+- `frontend` 的 `npm test` 通过（播放器和试听回退回归测试）
 - 应用镜像（Python + 静态资源）目标 < 200MB

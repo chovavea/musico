@@ -4,12 +4,12 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from app.adapters.http.envelope import fail, ok
-from app.adapters.http.preview import stream_official_preview
+from app.adapters.http.preview import stream_preview
 from app.adapters.persistence.repository import ChartRepository
 from app.domain.models import AudioQuality, BoardSpec, TrackRef
 from app.services.catalog import (
@@ -231,9 +231,28 @@ def build_router() -> APIRouter:
 
     @router.get("/preview/{platform}/{external_id}/stream")
     async def preview_stream(
-        platform: str, external_id: str, request: Request
+        platform: str,
+        external_id: str,
+        request: Request,
+        title: str = Query(default="", max_length=500),
+        artist: str = Query(default="", max_length=500),
+        album: str | None = Query(default=None, max_length=500),
+        duration_ms: int | None = Query(default=None, gt=0),
+        isrc: str | None = Query(default=None, max_length=100),
+        version: str | None = Query(default=None, max_length=200),
+        download_only: bool = False,
     ) -> StreamingResponse:
-        return await stream_official_preview(request, platform, external_id)
+        track = TrackRef(
+            platform=platform,
+            external_id=external_id,
+            title=title,
+            artist=artist,
+            album=album,
+            duration_ms=duration_ms,
+            isrc=isrc,
+            version=version,
+        )
+        return await stream_preview(request, track, download_only=download_only)
 
     @router.post("/downloads")
     async def create_download(payload: DownloadTrackIn, request: Request) -> Any:

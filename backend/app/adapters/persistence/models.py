@@ -62,6 +62,7 @@ class PlatformSongRow(Base):
     external_id: Mapped[str] = mapped_column(String(128), nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     artist: Mapped[str] = mapped_column(String(512), nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cover_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     official_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -246,3 +247,51 @@ class DownloadAttemptRow(LibraryBase):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PreviewEventRow(LibraryBase):
+    """Append-only audit trail of where a listening stream actually came from.
+
+    Diagnostics only: the API never exposes these rows to the frontend.
+    """
+
+    __tablename__ = "preview_event"
+    __table_args__ = (
+        Index("ix_preview_event_track_created", "track_key", "created_at"),
+        Index("ix_preview_event_pair_created", "origin_platform", "source_platform", "created_at"),
+        {"schema": LIBRARY_SCHEMA},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    track_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    origin_platform: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    artist: Mapped[str] = mapped_column(String(512), nullable=False)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_platform: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class PreviewSourceStatRow(LibraryBase):
+    """Aggregated per-platform-pair playability used to rank cross-platform targets."""
+
+    __tablename__ = "preview_source_stat"
+    __table_args__ = ({"schema": LIBRARY_SCHEMA},)
+
+    origin_platform: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_platform: Mapped[str] = mapped_column(String(64), primary_key=True)
+    success: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    avg_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )

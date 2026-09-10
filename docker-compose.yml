@@ -1,6 +1,12 @@
 services:
   musico:
     build: .
+    # Application settings live in .env only; compose keeps just the values that
+    # describe the container itself (service DNS, in-container paths, timezone).
+    # Anything added to .env is picked up here without touching this file.
+    env_file:
+      - path: .env
+        required: false
     ports: ["8080:8080"]
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
