@@ -9,13 +9,16 @@ from typing import Any, NamedTuple
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
+import structlog
 
 from app.adapters.http.safety import MAX_HOPS, REDIRECT_STATUSES, assert_outbound_url_allowed
 from app.domain.matching import is_auto_match
 from app.domain.models import AudioQuality, DownloadCandidate, DownloadResponse, TrackRef
 
+log = structlog.get_logger(__name__)
+
 UrlGuard = Callable[[str, Sequence[str]], Awaitable[None]]
-_PAGE_HOSTS = ("example.invalid", "www.example.invalid")
+_DEFAULT_BASE_URL = "https://www.example.invalid"
 _SEARCH_API_PATHS = (
     "/api/player/searchOnlineMusicTwo",
     "/api/player/searchOnlineMusicOne",
@@ -32,6 +35,9 @@ _AUDIO_URL_RE = re.compile(
     re.IGNORECASE,
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# The detail pages answer with this notice once the anonymous daily quota is
+# used up; registered visitors can continue after logging in.
+_ACCESS_LIMITED_MARKERS = ("今日访问已达限额", "登录后访问")
 
 
 class _LinkParser(HTMLParser):
@@ -81,6 +87,9 @@ class AriesSource:
         self._url_guard = url_guard or assert_outbound_url_allowed
         options = config or {}
         self._max_results = max(1, min(int(str(options.get("max_results", 8))), 20))
+        self._base_url = _normalize_base_url(options.get("base_url"))
+        self._referer = f"{self._base_url}/"
+        self._page_hosts = _hosts_for_base_url(self._base_url)
 
     async def search(self, track: TrackRef) -> list[DownloadCandidate]:
         query = quote(track.title or track.artist, safe="")
@@ -166,11 +175,11 @@ class AriesSource:
         track: TrackRef,
     ) -> DownloadCandidate | None:
         source_track_id = str(item.get("id") or "")
-        detail_url = f"https://www.example.invalid/music/{route}/{quote(source_track_id, safe='')}"
+        detail_url = f"{self._base_url}/music/{route}/{quote(source_track_id, safe='')}"
         try:
             response = await self._get(
                 detail_url,
-                headers={"Referer": "https://www.example.invalid/"},
+                headers={"Referer": self._referer},
             )
             response.raise_for_status()
         except (httpx.HTTPError, ValueError):
@@ -178,6 +187,7 @@ class AriesSource:
         html = response.text
         page_data = _extract_page_data(html, detail_url)
         if not page_data.download_url:
+            _log_access_limited(html, detail_url)
             return None
         title = page_data.title or str(item.get("name") or track.title)
         artist = page_data.artist or str(item.get("player") or track.artist)
@@ -222,27 +232,28 @@ class AriesSource:
             raise ValueError("aries candidate has no resolvable URL")
         response = await self._get(
             detail_url,
-            headers={"Referer": "https://www.example.invalid/"},
+            headers={"Referer": self._referer},
         )
         response.raise_for_status()
         download_url = _find_download_url(response.text, detail_url)
         if not download_url:
+            _log_access_limited(response.text, detail_url)
             raise ValueError("aries page has no direct download link")
-        headers = {"Referer": "https://www.example.invalid/"}
+        headers = {"Referer": self._referer}
         if offset > 0:
             headers["Range"] = f"bytes={offset}-"
         return DownloadResponse(url=download_url, headers=headers)
 
     async def _post_json(self, path: str, payload: dict[str, object]) -> httpx.Response:
-        url = urljoin("https://www.example.invalid/", path.lstrip("/"))
-        await self._url_guard(url, _PAGE_HOSTS)
+        url = urljoin(f"{self._base_url}/", path.lstrip("/"))
+        await self._url_guard(url, self._page_hosts)
         return await self._client.post(
             url,
             json=payload,
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "Referer": "https://www.example.invalid/",
+                "Referer": self._referer,
             },
             follow_redirects=False,
         )
@@ -250,7 +261,7 @@ class AriesSource:
     async def _get(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
         current_url = url
         for _hop in range(MAX_HOPS):
-            await self._url_guard(current_url, _PAGE_HOSTS)
+            await self._url_guard(current_url, self._page_hosts)
             response = await self._client.get(
                 current_url,
                 headers=headers,
@@ -263,6 +274,31 @@ class AriesSource:
                 raise ValueError("aries redirect missing location")
             current_url = urljoin(str(response.url), location)
         raise ValueError("aries page exceeded redirect limit")
+
+
+def _normalize_base_url(value: object) -> str:
+    raw = str(value).strip() if value is not None else ""
+    parsed = urlparse(raw or _DEFAULT_BASE_URL)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("download source base_url must be an http(s) URL with a host")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _hosts_for_base_url(base_url: str) -> tuple[str, ...]:
+    host = (urlparse(base_url).hostname or "").lower().rstrip(".")
+    if not host:
+        return ("example.invalid", "www.example.invalid")
+    hosts = [host]
+    if host.startswith("www."):
+        hosts.append(host.removeprefix("www."))
+    else:
+        hosts.append(f"www.{host}")
+    return tuple(dict.fromkeys(hosts))
+
+
+def _log_access_limited(html: str, url: str) -> None:
+    if any(marker in html for marker in _ACCESS_LIMITED_MARKERS):
+        log.warning("download_source_access_limited", source_id="aries", url=url)
 
 
 def _find_download_url(html: str, base_url: str) -> str | None:
