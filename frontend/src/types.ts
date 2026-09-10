@@ -52,6 +52,10 @@ export interface RankItem {
   raw_score: number | null;
   title: string;
   artist: string;
+  album?: string | null;
+  duration_ms?: number | null;
+  isrc?: string | null;
+  version?: string | null;
   cover_url: string | null;
   official_url: string | null;
   external_id: string;
@@ -59,6 +63,9 @@ export interface RankItem {
   preview_url: string | null;
   quality: "low" | "medium" | null;
   expire_at: string | null;
+  library_status?: "ready" | "missing" | "deleting" | null;
+  library_asset_id?: string | null;
+  active_download_id?: string | null;
 }
 
 export interface LatestBoard {
@@ -85,4 +92,55 @@ export interface HealthPayload {
   status: "starting" | "ready" | "degraded";
   staleness_multiplier: number;
   sources: HealthSource[];
+}
+
+export type DownloadStatus =
+  | "resolving"
+  | "queued"
+  | "downloading"
+  | "retrying"
+  | "completed"
+  | "failed"
+  | "missing";
+
+export interface DownloadTask {
+  id: string;
+  track_id: string;
+  title: string | null;
+  artist: string | null;
+  status: DownloadStatus;
+  bytes_done: number;
+  bytes_total: number | null;
+  progress: number | null;
+  attempt_count: number;
+  max_attempts: number;
+  selected_source_id: string | null;
+  selected_quality: Record<string, unknown> | null;
+  source_page_url: string | null;
+  last_error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface LibraryAsset {
+  id: string;
+  track_id: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  format: string;
+  sample_rate_hz: number | null;
+  bit_depth: number | null;
+  channels: number | null;
+  dsd_rate: string | null;
+  relative_path: string;
+  file_size: number;
+  sha256: string | null;
+  status: "ready" | "missing" | "deleting";
+  downloaded_at: string | null;
+}
+
+export interface DownloadSummary {
+  counts: Record<string, number>;
+  active: DownloadTask | null;
 }

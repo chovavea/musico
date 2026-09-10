@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { RankItem } from "../types";
+import { useTrackDownload } from "../composables/useTrackDownload";
 import { rowGridClass } from "../lib/list-grid";
 import { usePlayerStore } from "../stores/player";
 
 const props = defineProps<{ item: RankItem; queue?: RankItem[] }>();
 const player = usePlayerStore();
+const download = useTrackDownload();
 
 const delta = computed(() => {
   if (props.item.previous_rank == null) {
@@ -43,19 +45,45 @@ const active = computed(
 function onPlay() {
   player.play(props.item, props.queue);
 }
+
+const actionState = computed(() => download.state(props.item));
+
+const downloadState = computed(() => {
+  if (actionState.value === "ready") return "已下载";
+  if (actionState.value === "queued") return "队列中";
+  return "下载";
+});
+
+const downloadPillClass = computed(() => {
+  if (actionState.value === "ready") {
+    return "bg-emerald-600/15 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300";
+  }
+  if (actionState.value === "queued") {
+    return "bg-zinc-900/70 text-white/80 dark:bg-white/15 dark:text-zinc-300";
+  }
+  return "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900";
+});
+
+function onDownload() {
+  void download.enqueue(props.item);
+}
 </script>
 
 <template>
-  <button
-    type="button"
-    class="group min-h-[52px] w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-white/5"
+  <div
+    class="group relative grid min-h-[52px] w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-white/5"
     :class="[rowGridClass, active ? 'bg-zinc-50 dark:bg-white/5' : '']"
-    @click="onPlay"
   >
-    <div class="tabular text-right font-semibold" :class="rankKlass">
+    <button
+      type="button"
+      class="absolute inset-0 z-0 rounded-2xl focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-zinc-400 dark:focus-visible:outline-zinc-600"
+      :aria-label="`播放 ${item.title} · ${item.artist}`"
+      @click="onPlay"
+    />
+    <div class="pointer-events-none tabular text-right font-semibold" :class="rankKlass">
       {{ String(item.rank).padStart(2, "0") }}
     </div>
-    <div class="relative h-11 w-11 overflow-hidden rounded-lg">
+    <div class="pointer-events-none relative h-11 w-11 overflow-hidden rounded-lg">
       <img
         v-if="item.cover_url"
         :src="item.cover_url"
@@ -69,20 +97,31 @@ function onPlay() {
         ▶
       </span>
     </div>
-    <div class="min-w-0">
+    <div class="pointer-events-none min-w-0">
       <div class="truncate font-medium" :class="active ? 'text-emerald-600 dark:text-emerald-300' : ''">
         {{ item.title }}
       </div>
       <div class="truncate text-sm text-zinc-500 dark:text-zinc-400">{{ item.artist }}</div>
     </div>
-    <div class="flex items-center gap-2 text-sm">
-      <span class="tabular hidden w-8 shrink-0 text-right text-zinc-400 sm:inline">{{ Math.round(item.normalized_score) }}</span>
-      <span class="rounded-full px-2 py-0.5 text-xs" :class="delta.klass">{{ delta.text }}</span>
-      <span
-        class="grid h-11 min-w-11 place-items-center rounded-full bg-zinc-900 px-3 text-xs text-white dark:bg-white dark:text-zinc-900"
-      >
-        试听
+    <div class="flex items-center justify-self-end gap-2 text-sm">
+      <span class="pointer-events-none tabular hidden w-8 shrink-0 text-right text-zinc-400 sm:inline">{{ Math.round(item.normalized_score) }}</span>
+      <span class="pointer-events-none rounded-full px-2 py-0.5 text-xs" :class="delta.klass">{{ delta.text }}</span>
+      <span class="relative z-10 pointer-events-auto">
+        <button
+          type="button"
+          class="grid h-11 w-11 place-items-center rounded-full"
+          :class="downloadPillClass"
+          :aria-label="downloadState"
+          :title="downloadState"
+          :disabled="actionState !== 'idle'"
+          @click="onDownload"
+        >
+          <svg v-if="actionState !== 'ready'" viewBox="0 0 16 16" class="h-4 w-4" fill="none" aria-hidden="true">
+            <path d="M8 2.5v7m0 0 2.5-2.5M8 9.5 5.5 7M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span v-else aria-hidden="true">✓</span>
+        </button>
       </span>
     </div>
-  </button>
+  </div>
 </template>

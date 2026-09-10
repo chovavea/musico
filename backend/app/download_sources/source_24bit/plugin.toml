@@ -1,0 +1,8 @@
+id = "aries"
+name = "aries 无损音乐"
+entrypoint = "source:create_source"
+priority = 100
+hosts = ["example.invalid", "www.example.invalid", "music.126.net", "kuwo.cn"]
+
+[config_schema]
+max_results = 8

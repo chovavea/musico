@@ -6,13 +6,24 @@ import {
   type QQOfficialEvent,
   type QQOfficialPlayer,
 } from "../lib/qq-official-player";
+import { useDownloadsStore } from "./downloads";
 import type { RankItem } from "../types";
 
 function sameTrack(left: RankItem, right: RankItem): boolean {
   return left.platform === right.platform && left.external_id === right.external_id;
 }
 
+function hasLocalAsset(item: RankItem): boolean {
+  if (!item.library_asset_id || item.library_status !== "ready") {
+    return false;
+  }
+  return !useDownloadsStore().deletedAssetIds[item.library_asset_id];
+}
+
 function streamUrl(item: RankItem): string {
+  if (hasLocalAsset(item) && item.library_asset_id) {
+    return `/api/v1/library/${encodeURIComponent(item.library_asset_id)}/stream`;
+  }
   return `/api/v1/preview/${encodeURIComponent(item.platform)}/${encodeURIComponent(item.external_id)}/stream`;
 }
 
@@ -26,8 +37,13 @@ function previewPlayable(item: RankItem): boolean {
   return Boolean(item.platform && item.external_id);
 }
 
-function isQQ(item: RankItem | null): boolean {
-  return item?.platform === "qqmusic";
+function isQQOfficial(item: RankItem | null): boolean {
+  return item?.platform === "qqmusic" && !hasLocalAsset(item);
+}
+
+function sameAudioSource(audio: HTMLAudioElement, item: RankItem): boolean {
+  const expected = new URL(streamUrl(item), document.baseURI).href;
+  return audio.src === expected;
 }
 
 export const usePlayerStore = defineStore("player", {
@@ -47,7 +63,7 @@ export const usePlayerStore = defineStore("player", {
     canPreview: () => previewPlayable,
     progress: (state) => (state.duration > 0 ? state.currentTime / state.duration : 0),
     hasQueue: (state) => state.queue.length > 1,
-    usingOfficial: (state) => state.current?.platform === "qqmusic",
+    usingOfficial: (state) => Boolean(state.current && isQQOfficial(state.current)),
   },
   actions: {
     ensureAudio(): HTMLAudioElement {
@@ -61,11 +77,12 @@ export const usePlayerStore = defineStore("player", {
         this.next();
       });
       audio.addEventListener("error", () => {
-        if (
-          !this.current ||
-          isQQ(this.current) ||
-          !audio.src.includes(encodeURIComponent(this.current.external_id))
-        ) {
+        if (!this.current || isQQOfficial(this.current)) {
+          return;
+        }
+        // 本地曲库走 /library/{asset_id}/stream，不包含 external_id，
+        // 因此按 streamUrl 生成的完整源地址匹配，避免错误被静默吞掉。
+        if (!sameAudioSource(audio, this.current)) {
           return;
         }
         this.playing = false;
@@ -76,13 +93,13 @@ export const usePlayerStore = defineStore("player", {
         }
       });
       audio.addEventListener("timeupdate", () => {
-        if (isQQ(this.current)) {
+        if (isQQOfficial(this.current)) {
           return;
         }
         this.currentTime = audio.currentTime;
       });
       audio.addEventListener("loadedmetadata", () => {
-        if (isQQ(this.current)) {
+        if (isQQOfficial(this.current)) {
           return;
         }
         this.duration = Number.isFinite(audio.duration) ? audio.duration : 0;
@@ -105,7 +122,7 @@ export const usePlayerStore = defineStore("player", {
       this.officialBound = true;
       official.on("play", () => {
         const current = this.current;
-        if (!current || current.platform !== "qqmusic") {
+        if (!current || !isQQOfficial(current)) {
           return;
         }
         const playingMid = official.data?.song?.mid;
@@ -122,13 +139,13 @@ export const usePlayerStore = defineStore("player", {
         this.duration = Number.isFinite(duration) ? duration : this.duration;
       });
       official.on("pause", () => {
-        if (!isQQ(this.current)) {
+        if (!isQQOfficial(this.current)) {
           return;
         }
         this.playing = false;
       });
       official.on("ended", () => {
-        if (!isQQ(this.current)) {
+        if (!isQQOfficial(this.current)) {
           return;
         }
         this.playing = false;
@@ -136,7 +153,7 @@ export const usePlayerStore = defineStore("player", {
         this.next();
       });
       official.on("timeupdate", (event: QQOfficialEvent) => {
-        if (!isQQ(this.current)) {
+        if (!isQQOfficial(this.current)) {
           return;
         }
         const time = event.currentTime ?? official.currentTime;
@@ -149,7 +166,7 @@ export const usePlayerStore = defineStore("player", {
         }
       });
       official.on("error", () => {
-        if (!isQQ(this.current)) {
+        if (!isQQOfficial(this.current)) {
           return;
         }
         this.playing = false;
@@ -172,7 +189,7 @@ export const usePlayerStore = defineStore("player", {
       this.currentTime = 0;
       this.duration = 0;
       this.playing = false;
-      if (isQQ(item)) {
+      if (isQQOfficial(item)) {
         this.stopLocalAudio();
         void this.startOfficial(item);
         return;
@@ -195,14 +212,14 @@ export const usePlayerStore = defineStore("player", {
       try {
         const official = await loadQQOfficialPlayer();
         const current = this.current;
-        if (!current || current.platform !== "qqmusic" || current.external_id !== item.external_id) {
+        if (!current || !isQQOfficial(current) || current.external_id !== item.external_id) {
           return;
         }
         this.bindOfficial(official);
         official.play(item.external_id, { target: "web" });
       } catch {
         const current = this.current;
-        if (current?.platform === "qqmusic" && current.external_id === item.external_id) {
+        if (current && isQQOfficial(current) && current.external_id === item.external_id) {
           this.playing = false;
           this.failed = true;
         }
@@ -212,7 +229,7 @@ export const usePlayerStore = defineStore("player", {
       if (!this.current) {
         return;
       }
-      if (isQQ(this.current)) {
+      if (isQQOfficial(this.current)) {
         getQQOfficialPlayer()?.toggle();
         return;
       }
@@ -250,7 +267,7 @@ export const usePlayerStore = defineStore("player", {
     },
     seek(ratio: number) {
       const nextRatio = Math.min(1, Math.max(0, ratio));
-      if (isQQ(this.current)) {
+      if (isQQOfficial(this.current)) {
         const official = getQQOfficialPlayer();
         if (!official || !Number.isFinite(official.duration) || official.duration <= 0) {
           return;

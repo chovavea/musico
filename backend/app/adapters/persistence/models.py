@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
+    JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -21,10 +23,16 @@ class Base(DeclarativeBase):
     pass
 
 
-def utcnow() -> datetime:
-    from datetime import timezone
+class LibraryBase(DeclarativeBase):
+    pass
 
-    return datetime.now(timezone.utc)
+
+LIBRARY_SCHEMA = "musico_library"
+
+
+def utcnow() -> datetime:
+
+    return datetime.now(UTC)
 
 
 class PlatformRow(Base):
@@ -113,3 +121,128 @@ class CatalogChartOrderRow(Base):
     platform_id: Mapped[str] = mapped_column(ForeignKey("platform.id"), primary_key=True)
     chart_key: Mapped[str] = mapped_column(String(128), primary_key=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class LibraryTrackRow(LibraryBase):
+    __tablename__ = "library_track"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_library_track_identity_key"),
+        Index("ix_library_track_identity", "normalized_title", "normalized_artist"),
+        {"schema": LIBRARY_SCHEMA},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    artist: Mapped[str] = mapped_column(String(512), nullable=False)
+    album: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    normalized_title: Mapped[str] = mapped_column(String(512), nullable=False)
+    normalized_artist: Mapped[str] = mapped_column(String(512), nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    isrc: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class LibrarySourceRefRow(LibraryBase):
+    __tablename__ = "library_source_ref"
+    __table_args__ = (
+        UniqueConstraint("source_id", "source_track_id", name="uq_library_source_track"),
+        Index("ix_library_source_ref_track", "library_track_id"),
+        {"schema": LIBRARY_SCHEMA},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    library_track_id: Mapped[str] = mapped_column(
+        ForeignKey(f"{LIBRARY_SCHEMA}.library_track.id"), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_track_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_page_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class LibraryAssetRow(LibraryBase):
+    __tablename__ = "library_asset"
+    __table_args__ = (
+        UniqueConstraint(
+            "library_track_id",
+            "format",
+            "sample_rate_hz",
+            "bit_depth",
+            "channels",
+            "dsd_rate",
+            name="uq_library_asset_quality",
+        ),
+        Index("ix_library_asset_track_status", "library_track_id", "status"),
+        {"schema": LIBRARY_SCHEMA},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    library_track_id: Mapped[str] = mapped_column(
+        ForeignKey(f"{LIBRARY_SCHEMA}.library_track.id"), nullable=False
+    )
+    format: Mapped[str] = mapped_column(String(16), nullable=False)
+    sample_rate_hz: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bit_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    channels: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dsd_rate: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    relative_path: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ready")
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DownloadTaskRow(LibraryBase):
+    __tablename__ = "download_task"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_download_task_idempotency"),
+        Index("ix_download_task_claim", "status", "next_retry_at", "heartbeat_at"),
+        {"schema": LIBRARY_SCHEMA},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    library_track_id: Mapped[str] = mapped_column(
+        ForeignKey(f"{LIBRARY_SCHEMA}.library_track.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="resolving")
+    requested_quality: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    selected_quality: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    selected_source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    selected_source_track_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_page_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    candidate_snapshot: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
+    bytes_done: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DownloadAttemptRow(LibraryBase):
+    __tablename__ = "download_attempt"
+    __table_args__ = ({"schema": LIBRARY_SCHEMA},)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey(f"{LIBRARY_SCHEMA}.download_task.id"), nullable=False
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -25,9 +25,16 @@ export const useChartsStore = defineStore("charts", {
   }),
   actions: {
     async loadBoards() {
-      const res = await listBoards();
-      if (res.code === 0) {
-        this.boards = res.data.filter((item) => item.enabled);
+      try {
+        const res = await listBoards();
+        if (res.code === 0) {
+          this.boards = res.data.filter((item) => item.enabled);
+          this.error = "";
+        } else {
+          this.error = res.msg || "榜单加载失败";
+        }
+      } catch (err) {
+        this.error = err instanceof Error ? err.message : "榜单加载失败";
       }
     },
     async loadPlatforms() {
@@ -47,15 +54,31 @@ export const useChartsStore = defineStore("charts", {
       }
     },
     async refreshLatest(id: string) {
-      const res = await latestBoard(id);
-      if (res.data && Array.isArray(res.data.items)) {
-        this.latest[id] = res.data;
+      try {
+        const res = await latestBoard(id);
+        if (res.data && Array.isArray(res.data.items)) {
+          this.latest[id] = res.data;
+          this.error = "";
+          return;
+        }
+        if (res.msg) this.error = res.msg;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "榜单加载失败";
+        if (!this.latest[id]?.items.length) this.error = msg;
       }
     },
     async refreshCatalogLatest(platform: string, chartKey: string, boardId: string) {
-      const res = await catalogLatest(platform, chartKey);
-      if (res.data && Array.isArray(res.data.items)) {
-        this.latest[boardId] = { ...res.data, board_id: boardId };
+      try {
+        const res = await catalogLatest(platform, chartKey);
+        if (res.data && Array.isArray(res.data.items)) {
+          this.latest[boardId] = { ...res.data, board_id: boardId };
+          this.error = "";
+          return;
+        }
+        if (res.msg) this.error = res.msg;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "榜单加载失败";
+        if (!this.latest[boardId]?.items.length) this.error = msg;
       }
     },
     async ensureLatest(board: BoardInfo) {

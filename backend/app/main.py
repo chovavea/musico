@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 import structlog
+import yaml
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -14,15 +15,18 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.adapters.http.middleware import RequestIdMiddleware
+from app.adapters.download_worker import DownloadWorker
+from app.adapters.http.middleware import ApiTokenMiddleware, RequestIdMiddleware
 from app.adapters.http.routes import build_router
 from app.adapters.persistence.database import make_engine, make_session_factory
 from app.adapters.persistence.repository import ChartRepository
 from app.adapters.scheduler.jobs import ChartScheduler
+from app.download_sources.registry import load_download_sources
 from app.logging import configure_logging
 from app.plugins._registry import load_registry
 from app.services.boards_config import BoardsConfigError, load_raw_boards, parse_board_specs
 from app.services.collect import CollectService
+from app.services.downloads import DownloadService
 from app.settings import Settings, get_settings
 
 log = structlog.get_logger(__name__)
@@ -57,13 +61,27 @@ def _resolve_boards_path(settings: Settings) -> Path:
     return path
 
 
+def _resolve_download_config(settings: Settings) -> dict[str, object]:
+    path = settings.download_source_config
+    if not path.is_file():
+        fallback = Path(__file__).resolve().parents[2] / "configs" / "download_sources.yaml"
+        path = fallback if fallback.is_file() else path
+    if not path.is_file():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return raw if isinstance(raw, dict) else {}
+
+
 def _run_alembic(settings: Settings) -> None:
     from alembic import command
     from alembic.config import Config
 
     ini = Path(__file__).resolve().parents[1] / "alembic.ini"
     cfg = Config(str(ini))
-    cfg.set_main_option("sqlalchemy.url", settings.sync_database_url)
+    cfg.set_main_option(
+        "sqlalchemy.url",
+        settings.sync_database_url.replace("%", "%%"),
+    )
     command.upgrade(cfg, "head")
 
 
@@ -100,13 +118,34 @@ def create_app(
 
     engine = make_engine(settings)
     session_factory = make_session_factory(engine)
+    user_agent = "musico/0.1 (+self-hosted charts)"
     timeout = httpx.Timeout(settings.http_timeout_sec)
     client = httpx.AsyncClient(
         timeout=timeout,
-        headers={"User-Agent": "musico/0.1 (+self-hosted charts)"},
+        headers={"User-Agent": user_agent},
         follow_redirects=True,
     )
+    # Long-lived media streams get dedicated clients with redirects disabled:
+    # every hop is re-validated manually, and a stalled CDN cannot starve the
+    # connection pool used by chart collection / health checks.
+    preview_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(settings.http_timeout_sec, read=60.0),
+        headers={"User-Agent": user_agent},
+        follow_redirects=False,
+        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+    )
+    download_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(settings.http_timeout_sec, read=settings.download_timeout_sec),
+        headers={"User-Agent": user_agent},
+        follow_redirects=False,
+        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+    )
     registry = load_registry(client)
+    download_sources = load_download_sources(
+        client,
+        roots=settings.download_roots,
+        config=_resolve_download_config(settings),
+    )
     unknown = [spec.platform for spec in specs if spec.platform not in registry.plugins]
     if unknown:
         log.error("unknown_platforms", platforms=unknown)
@@ -117,6 +156,8 @@ def create_app(
 
     collect = CollectService(registry, session_factory, settings, cache={})
     scheduler = ChartScheduler(collect, specs) if start_scheduler else None
+    download_service = DownloadService(session_factory, settings)
+    download_worker = DownloadWorker(session_factory, download_client, download_sources, settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -126,24 +167,34 @@ def create_app(
         async with session_factory() as session:
             await ChartRepository(session).upsert_catalog(specs, registry.platform_names())
             await session.commit()
+        settings.music_library_dir.mkdir(parents=True, exist_ok=True)
         if scheduler is not None:
             scheduler.start()
+        download_worker.start()
         yield
+        await download_worker.shutdown()
         if scheduler is not None:
             scheduler.shutdown()
         await client.aclose()
+        await preview_client.aclose()
+        await download_client.aclose()
         await engine.dispose()
 
     app = FastAPI(title="musico", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(ApiTokenMiddleware, api_token=settings.api_token)
     app.include_router(build_router())
     app.state.settings = settings
     app.state.board_specs = specs
     app.state.registry = registry
+    app.state.download_sources = download_sources
+    app.state.download_service = download_service
+    app.state.download_worker = download_worker
     app.state.session_factory = session_factory
     app.state.latest_cache = collect.latest_cache
     app.state.collect = collect
     app.state.http_client = client
+    app.state.preview_client = preview_client
 
     dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if dist.is_dir():

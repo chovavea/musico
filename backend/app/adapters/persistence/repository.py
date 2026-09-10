@@ -4,19 +4,24 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.persistence.models import (
     BoardLatestRow,
     BoardRow,
     CatalogChartOrderRow,
+    DownloadTaskRow,
+    LibraryAssetRow,
+    LibraryTrackRow,
     PlatformRow,
     PlatformSongRow,
     ProviderHealthRow,
     RankEntryRow,
     RankSnapshotRow,
 )
+from app.domain.matching import artist_key, normalize_text
 from app.domain.models import BoardSpec, RawRankItem
 from app.domain.normalize import normalized_score
 
@@ -186,6 +191,7 @@ class ChartRepository:
                     else None,
                 }
             )
+        await self._annotate_library(entries)
         return {
             "board_id": board_id,
             "snapshot_id": snapshot.id,
@@ -194,6 +200,60 @@ class ChartRepository:
             "updated_at_dt": latest.updated_at,
             "items": entries,
         }
+
+    async def _annotate_library(self, entries: list[dict[str, Any]]) -> None:
+        if not entries:
+            return
+
+        clauses = [
+            (normalize_text(str(item["title"])), artist_key(str(item["artist"])))
+            for item in entries
+        ]
+        filters = [
+            (LibraryTrackRow.normalized_title == title)
+            & (LibraryTrackRow.normalized_artist == artist)
+            for title, artist in clauses
+        ]
+        try:
+            tracks_result = await self._session.execute(select(LibraryTrackRow).where(or_(*filters)))
+            tracks = {track.id: track for track in tracks_result.scalars().all()}
+            if not tracks:
+                return
+            track_by_key = {
+                (track.normalized_title, track.normalized_artist): track for track in tracks.values()
+            }
+            asset_result = await self._session.execute(
+                select(LibraryAssetRow).where(
+                    LibraryAssetRow.library_track_id.in_(list(tracks)),
+                    LibraryAssetRow.status == "ready",
+                )
+            )
+            assets = {asset.library_track_id: asset for asset in asset_result.scalars().all()}
+            task_result = await self._session.execute(
+                select(DownloadTaskRow).where(
+                    DownloadTaskRow.library_track_id.in_(list(tracks)),
+                    DownloadTaskRow.status.in_(["resolving", "queued", "downloading", "retrying"]),
+                )
+            )
+            tasks = {task.library_track_id: task for task in task_result.scalars().all()}
+            for item in entries:
+                track = track_by_key.get(
+                    (normalize_text(str(item["title"])), artist_key(str(item["artist"])))
+                )
+                if track is None:
+                    continue
+                asset = assets.get(track.id)
+                task = tasks.get(track.id)
+                item["library_status"] = asset.status if asset else None
+                item["library_asset_id"] = asset.id if asset else None
+                item["active_download_id"] = task.id if task else None
+        except SQLAlchemyError:
+            # Library tables are introduced by a later migration; chart reads remain usable
+            # during an in-place upgrade or when running the chart-only test fixtures.
+            return
+
+    async def annotate_library(self, entries: list[dict[str, Any]]) -> None:
+        await self._annotate_library(entries)
 
     async def board_sort_map(self) -> dict[str, int]:
         result = await self._session.execute(select(BoardRow.id, BoardRow.sort_order))

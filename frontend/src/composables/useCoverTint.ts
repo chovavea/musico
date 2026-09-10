@@ -180,14 +180,21 @@ export function useCoverPalette(coverUrl: Ref<string | null | undefined>): Ref<C
     sampled.value ? paletteFromRgb(sampled.value, dark.value) : fallbackPalette(dark.value),
   );
 
+  // 异步取色带代际编号：封面快速切换时丢弃过期请求的结果，避免旧封面颜色覆盖新封面。
+  let generation = 0;
   async function extract(url: string): Promise<void> {
-    sampled.value = await extractRgb(url);
+    const current = ++generation;
+    const rgb = await extractRgb(url);
+    if (current === generation) {
+      sampled.value = rgb;
+    }
   }
 
   onMounted(() => {
     if (coverUrl.value) void extract(coverUrl.value);
   });
-  watch(coverUrl, (url) => {
+  watch(coverUrl, (url, previous) => {
+    if (url === previous) return;
     sampled.value = null;
     if (url) void extract(url);
   });
