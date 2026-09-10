@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { RankItem } from "../types";
-import { downloadActionState, useTrackDownload } from "../composables/useTrackDownload";
+import { useTrackDownload } from "../composables/useTrackDownload";
 import { rowGridClass } from "../lib/list-grid";
 import { usePlayerStore } from "../stores/player";
 
@@ -46,7 +46,7 @@ function onPlay() {
   player.play(props.item, props.queue);
 }
 
-const actionState = computed(() => downloadActionState(props.item));
+const actionState = computed(() => download.state(props.item));
 
 const downloadState = computed(() => {
   if (actionState.value === "ready") return "已下载";
@@ -113,9 +113,10 @@ function onDownload() {
           :class="downloadPillClass"
           :aria-label="downloadState"
           :title="downloadState"
+          :disabled="actionState !== 'idle'"
           @click="onDownload"
         >
-          <svg v-if="item.library_status !== 'ready'" viewBox="0 0 16 16" class="h-4 w-4" fill="none" aria-hidden="true">
+          <svg v-if="actionState !== 'ready'" viewBox="0 0 16 16" class="h-4 w-4" fill="none" aria-hidden="true">
             <path d="M8 2.5v7m0 0 2.5-2.5M8 9.5 5.5 7M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
           <span v-else aria-hidden="true">✓</span>

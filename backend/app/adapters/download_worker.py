@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
@@ -33,6 +33,19 @@ from app.settings import Settings
 UrlGuard = Callable[[str, Sequence[str]], Awaitable[None]]
 
 log = structlog.get_logger(__name__)
+
+_CROSS_ORIGIN_SENSITIVE_HEADERS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "credential",
+    "authorization",
+    "cookie",
+    "private",
+    "certificate",
+    "signing",
+)
 
 
 class DownloadWorker:
@@ -107,12 +120,19 @@ class DownloadWorker:
                 await session.commit()
                 return
             track = _track_from_row(track_row)
+            previous_source_id = task.selected_source_id
+            previous_source_track_id = task.selected_source_track_id
             candidates = await self._candidate_pool(session, repo, task, track)
             if not await repo.has_lease(task):
                 await session.rollback()
                 return
             if not candidates:
-                if await repo.mark_failed(task, "no matching download source"):
+                error = (
+                    "no download source matches requested quality"
+                    if task.requested_quality
+                    else "no matching download source"
+                )
+                if await repo.mark_failed(task, error):
                     self._cleanup_partial(task)
                 await session.commit()
                 return
@@ -120,6 +140,14 @@ class DownloadWorker:
                 task.attempt_count // max(task.max_attempts, 1), len(candidates) - 1
             )
             candidate = candidates[candidate_index]
+            source_changed = (
+                previous_source_id != candidate.source_id
+                or previous_source_track_id != candidate.source_track_id
+            )
+            if source_changed:
+                self._cleanup_partial(task)
+                task.bytes_done = 0
+                task.bytes_total = None
             task.selected_source_id = candidate.source_id
             task.selected_source_track_id = candidate.source_track_id
             task.source_page_url = candidate.source_page_url
@@ -202,8 +230,22 @@ class DownloadWorker:
         task: DownloadTaskRow,
         track: TrackRef,
     ) -> list[DownloadCandidate]:
+        requested_quality = (
+            AudioQuality.model_validate(task.requested_quality)
+            if task.requested_quality
+            else None
+        )
         if task.candidate_snapshot:
-            return [DownloadCandidate.model_validate(item) for item in task.candidate_snapshot]
+            snapshot_candidates = [
+                DownloadCandidate.model_validate(item) for item in task.candidate_snapshot
+            ]
+            if requested_quality is not None:
+                snapshot_candidates = [
+                    candidate
+                    for candidate in snapshot_candidates
+                    if candidate.quality.may_match_requested(requested_quality)
+                ]
+            return snapshot_candidates
         results = await asyncio.gather(
             *(record.source.search(track) for record in self._sources.enabled()),
             return_exceptions=True,
@@ -228,6 +270,10 @@ class DownloadWorker:
                         isrc=candidate.isrc,
                         version=candidate.version,
                     ),
+                )
+                and (
+                    requested_quality is None
+                    or candidate.quality.may_match_requested(requested_quality)
                 )
             )
         if not candidates:
@@ -257,7 +303,7 @@ class DownloadWorker:
         source = self._sources.get(candidate.source_id)
         if source is None:
             raise ValueError("download source missing")
-        directory = self._settings.music_library_dir / task.library_track_id
+        directory = self._settings.music_library_dir
         directory.mkdir(parents=True, exist_ok=True)
         extension = candidate.quality.format.lower().lstrip(".") or "bin"
         part_path = directory / f"{task.id}.part"
@@ -275,7 +321,9 @@ class DownloadWorker:
             # Validate every hop (allowlist + non-private IPs). Redirects are
             # followed manually so a 302 to an internal host is rejected.
             await self._url_guard(url, source.hosts)
-            async with self._client.stream("GET", url, headers=headers) as response:
+            async with self._client.stream(
+                "GET", url, headers=headers, follow_redirects=False
+            ) as response:
                 status = response.status_code
                 if status in REDIRECT_STATUSES:
                     location = response.headers.get("location")
@@ -286,7 +334,12 @@ class DownloadWorker:
                         bytes_done = 0
                         headers.pop("Range", None)
                         part_path.unlink(missing_ok=True)
-                    url = urljoin(str(response.url), location)
+                    next_url = urljoin(str(response.url), location)
+                    if not _same_origin(url, next_url):
+                        headers = _headers_for_cross_origin_redirect(
+                            headers, url, next_url
+                        )
+                    url = next_url
                     continue
                 if status >= 400:
                     raise ValueError(f"download HTTP {status}")
@@ -339,9 +392,27 @@ class DownloadWorker:
                 break
         else:
             raise ValueError("download exceeded redirect limit")
-        verified_quality = await asyncio.to_thread(
-            _verify_audio, part_path, candidate.quality.format
-        )
+        try:
+            verified_quality = await asyncio.to_thread(
+                _verify_audio, part_path, candidate.quality.format
+            )
+            advertised_dimensions = (
+                candidate.quality.sample_rate_hz is not None
+                or candidate.quality.bit_depth is not None
+                or candidate.quality.channels is not None
+                or candidate.quality.dsd_rate is not None
+            )
+            if advertised_dimensions and not verified_quality.matches_requested(
+                candidate.quality
+            ):
+                raise ValueError("downloaded audio does not match advertised quality")
+            if task.requested_quality is not None:
+                requested_quality = AudioQuality.model_validate(task.requested_quality)
+                if not verified_quality.matches_requested(requested_quality):
+                    raise ValueError("downloaded audio does not match requested quality")
+        except Exception:
+            part_path.unlink(missing_ok=True)
+            raise
         candidate.quality = verified_quality
         await asyncio.to_thread(os.replace, part_path, final_path)
         return (
@@ -351,17 +422,16 @@ class DownloadWorker:
         )
 
     def _cleanup_partial(self, task: DownloadTaskRow) -> None:
-        self._part_path(task.id, task.library_track_id).unlink(missing_ok=True)
+        self._part_path(task.id).unlink(missing_ok=True)
 
     def _cleanup_download_files(
         self,
         task_id: str,
-        library_track_id: str,
         relative_path: str,
         *,
         remove_final: bool = True,
     ) -> None:
-        self._part_path(task_id, library_track_id).unlink(missing_ok=True)
+        self._part_path(task_id).unlink(missing_ok=True)
         if not remove_final:
             return
         path = (self._settings.music_library_dir / relative_path).resolve()
@@ -369,8 +439,8 @@ class DownloadWorker:
         if path != root and root in path.parents:
             path.unlink(missing_ok=True)
 
-    def _part_path(self, task_id: str, library_track_id: str) -> Path:
-        return self._settings.music_library_dir / library_track_id / f"{task_id}.part"
+    def _part_path(self, task_id: str) -> Path:
+        return self._settings.music_library_dir / f"{task_id}.part"
 
     async def _record_completion_failure(
         self,
@@ -396,7 +466,6 @@ class DownloadWorker:
             )
             self._cleanup_download_files(
                 task_id,
-                task.library_track_id,
                 relative_path,
                 remove_final=asset_ref.first() is None,
             )
@@ -437,6 +506,39 @@ def _now():
     return datetime.now(UTC)
 
 
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.port is not None:
+        port = parsed.port
+    elif scheme == "http":
+        port = 80
+    elif scheme == "https":
+        port = 443
+    else:
+        port = None
+    return scheme, hostname, port
+
+
+def _same_origin(left: str, right: str) -> bool:
+    return _origin(left) == _origin(right)
+
+
+def _headers_for_cross_origin_redirect(
+    headers: dict[str, str], previous_url: str, next_url: str
+) -> dict[str, str]:
+    """Drop credentials and connection-specific headers before changing origin."""
+    if _same_origin(previous_url, next_url):
+        return headers
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in {"host", "proxy-authorization"}
+        and not any(marker in name.lower() for marker in _CROSS_ORIGIN_SENSITIVE_HEADERS)
+    }
+
+
 def _write_and_hash(output: BinaryIO, chunk: bytes, digest: Any) -> None:
     """Synchronous disk append + digest update, run via asyncio.to_thread."""
     output.write(chunk)
@@ -454,13 +556,54 @@ def _verify_audio(path: Path, format_name: str) -> AudioQuality:
     audio = MutagenFile(path)
     if audio is None or getattr(audio, "info", None) is None:
         raise ValueError("downloaded file is not a readable audio file")
+    actual_format = _audio_format(audio)
+    expected_format = format_name.lower().lstrip(".")
+    if actual_format != expected_format:
+        raise ValueError("downloaded file format does not match advertised format")
     info = audio.info
     sample_rate = getattr(info, "sample_rate", None)
     bit_depth = getattr(info, "bits_per_sample", None)
     channels = getattr(info, "channels", None)
     return AudioQuality(
-        format=format_name.lower().lstrip("."),
+        format=actual_format,
         sample_rate_hz=int(sample_rate) if sample_rate else None,
         bit_depth=int(bit_depth) if bit_depth else None,
         channels=int(channels) if channels else None,
     )
+
+
+def _audio_format(audio: Any) -> str:
+    module = type(audio).__module__.lower()
+    module_formats = {
+        "mutagen.flac": "flac",
+        "mutagen.wave": "wav",
+        "mutagen.aiff": "aiff",
+        "mutagen.dsf": "dsf",
+        "mutagen.mp3": "mp3",
+        "mutagen.asf": "wma",
+        "mutagen.oggvorbis": "ogg",
+        "mutagen.oggopus": "opus",
+    }
+    if module in module_formats:
+        return module_formats[module]
+    if module == "mutagen.mp4":
+        codec = str(getattr(getattr(audio, "info", None), "codec", "")).lower()
+        return "alac" if codec == "alac" else "m4a"
+    mime_formats = {
+        "audio/flac": "flac",
+        "audio/wav": "wav",
+        "audio/wave": "wav",
+        "audio/x-wav": "wav",
+        "audio/aiff": "aiff",
+        "audio/x-aiff": "aiff",
+        "audio/dsf": "dsf",
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/ogg": "ogg",
+        "audio/opus": "opus",
+    }
+    for mime in getattr(audio, "mime", ()) or ():
+        normalized = str(mime).lower().split(";", 1)[0]
+        if normalized in mime_formats:
+            return mime_formats[normalized]
+    raise ValueError("downloaded file format is unsupported")

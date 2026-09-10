@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -56,29 +58,41 @@ class LibraryRepository:
     async def find_or_create_track(self, track: TrackRef) -> LibraryTrackRow:
         row = await self.find_track(track)
         if row is not None:
-            row.title = track.title
-            row.artist = track.artist
-            row.album = track.album or row.album
-            row.duration_ms = track.duration_ms or row.duration_ms
-            row.isrc = track.isrc or row.isrc
-            row.version = track.version or row.version
-            row.updated_at = _now()
-            identity_key = track_identity_key(_track_from_row(row))
-            if identity_key != row.identity_key:
+            merged = TrackRef(
+                platform="library",
+                external_id=row.id,
+                title=track.title,
+                artist=track.artist,
+                album=track.album or row.album,
+                duration_ms=track.duration_ms or row.duration_ms,
+                isrc=track.isrc or row.isrc,
+                version=track.version or row.version,
+            )
+            identity_key = track_identity_key(merged)
+            with self._session.no_autoflush:
                 owner = await self._get_track_by_identity(identity_key)
-                if owner is not None and owner.id != row.id:
-                    await self._session.refresh(row)
-                    return owner
-                try:
-                    async with self._session.begin_nested():
-                        row.identity_key = identity_key
-                        await self._session.flush()
-                except IntegrityError:
+            if owner is not None and owner.id != row.id:
+                return owner
+            try:
+                async with self._session.begin_nested():
+                    row.title = merged.title
+                    row.artist = merged.artist
+                    row.album = merged.album
+                    row.duration_ms = merged.duration_ms
+                    row.isrc = merged.isrc
+                    row.version = merged.version
+                    row.normalized_title = normalize_text(merged.title)
+                    row.normalized_artist = artist_key(merged.artist)
+                    row.identity_key = identity_key
+                    row.updated_at = _now()
+                    await self._session.flush()
+            except IntegrityError:
+                await self._session.refresh(row)
+                with self._session.no_autoflush:
                     owner = await self._get_track_by_identity(identity_key)
-                    if owner is None:
-                        raise
-                    await self._session.refresh(row)
-                    return owner
+                if owner is None:
+                    raise
+                return owner
             return row
         row = LibraryTrackRow(
             id=str(uuid.uuid4()),
@@ -120,13 +134,30 @@ class LibraryRepository:
                 return row
         return None
 
-    async def get_ready_asset(self, track_id: str) -> LibraryAssetRow | None:
+    async def get_ready_asset(
+        self, track_id: str, requested_quality: AudioQuality | None = None
+    ) -> LibraryAssetRow | None:
+        conditions = [
+            LibraryAssetRow.library_track_id == track_id,
+            LibraryAssetRow.status == "ready",
+        ]
+        if requested_quality is not None:
+            conditions.append(
+                LibraryAssetRow.format == requested_quality.format.lower().lstrip(".")
+            )
+            if requested_quality.sample_rate_hz is not None:
+                conditions.append(
+                    LibraryAssetRow.sample_rate_hz == requested_quality.sample_rate_hz
+                )
+            if requested_quality.bit_depth is not None:
+                conditions.append(LibraryAssetRow.bit_depth == requested_quality.bit_depth)
+            if requested_quality.channels is not None:
+                conditions.append(LibraryAssetRow.channels == requested_quality.channels)
+            if requested_quality.dsd_rate is not None:
+                conditions.append(LibraryAssetRow.dsd_rate == requested_quality.dsd_rate)
         result = await self._session.execute(
             select(LibraryAssetRow)
-            .where(
-                LibraryAssetRow.library_track_id == track_id,
-                LibraryAssetRow.status == "ready",
-            )
+            .where(*conditions)
             .order_by(LibraryAssetRow.downloaded_at.desc().nullslast())
         )
         return result.scalars().first()
@@ -428,6 +459,8 @@ class LibraryRepository:
                         LibraryAssetRow.format == quality.format,
                         LibraryAssetRow.sample_rate_hz.is_not_distinct_from(quality.sample_rate_hz),
                         LibraryAssetRow.bit_depth.is_not_distinct_from(quality.bit_depth),
+                        LibraryAssetRow.channels.is_not_distinct_from(quality.channels),
+                        LibraryAssetRow.dsd_rate.is_not_distinct_from(quality.dsd_rate),
                     ),
                     LibraryAssetRow.relative_path == relative_path,
                 ),
@@ -442,6 +475,8 @@ class LibraryRepository:
                 if item.format == quality.format
                 and item.sample_rate_hz == quality.sample_rate_hz
                 and item.bit_depth == quality.bit_depth
+                and item.channels == quality.channels
+                and item.dsd_rate == quality.dsd_rate
             ),
             None,
         )
@@ -576,5 +611,14 @@ class LibraryRepository:
         }
 
 
-def task_idempotency_key(track: TrackRef) -> str:
-    return track_key(track)
+def task_idempotency_key(
+    track: TrackRef, requested_quality: AudioQuality | None = None
+) -> str:
+    if requested_quality is None:
+        return track_key(track)
+    quality_fields = requested_quality.model_dump(mode="json", exclude_none=True)
+    quality_fields["format"] = requested_quality.format.lower().lstrip(".")
+    quality_payload = json.dumps(quality_fields, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(
+        f"{track_key(track)}|quality:{quality_payload}".encode()
+    ).hexdigest()

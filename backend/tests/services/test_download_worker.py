@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from app.adapters.download_worker import DownloadWorker
+from app.adapters.download_worker import DownloadWorker, _headers_for_cross_origin_redirect
 from app.adapters.persistence.models import DownloadTaskRow
 from app.domain.models import AudioQuality, DownloadCandidate, DownloadResponse, TrackRef
 from app.download_sources.registry import DownloadSourceRecord, DownloadSourceRegistry
@@ -105,6 +105,75 @@ async def test_candidate_pool_keeps_only_highest_quality() -> None:
 
 
 @pytest.mark.asyncio
+async def test_candidate_pool_filters_requested_quality_before_selecting_highest() -> None:
+    track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
+    candidates = [
+        DownloadCandidate(
+            source_id="aries",
+            source_track_id="hires",
+            title="晴天",
+            artist="周杰伦",
+            quality=AudioQuality(format="flac", sample_rate_hz=96_000, bit_depth=24),
+        ),
+        DownloadCandidate(
+            source_id="aries",
+            source_track_id="cd",
+            title="晴天",
+            artist="周杰伦",
+            quality=AudioQuality(format="flac", sample_rate_hz=44_100, bit_depth=16),
+        ),
+    ]
+    source = _Source(candidates)
+    registry = DownloadSourceRegistry(
+        sources={
+            "aries": DownloadSourceRecord(
+                source_id="aries",
+                name="aries",
+                priority=100,
+                hosts=("example.invalid",),
+                config_schema={},
+                source=source,
+            )
+        }
+    )
+    settings = Settings(boards_yaml=Path("configs/boards.yaml"))
+    worker = DownloadWorker(
+        SimpleNamespace(), httpx.AsyncClient(), registry, settings, url_guard=_allow_all_urls
+    )
+    repo = _Repo()
+    task = DownloadTaskRow(
+        id="task",
+        library_track_id="track",
+        status="downloading",
+        requested_quality={"format": "flac", "sample_rate_hz": 44_100, "bit_depth": 16},
+    )
+    selected = await worker._candidate_pool(_Session(), repo, task, track)
+    await worker._client.aclose()
+    assert [item.source_track_id for item in selected] == ["cd"]
+
+
+def test_cross_origin_redirect_drops_sensitive_headers() -> None:
+    headers = {
+        "Authorization": "Bearer <REDACTED>",
+        "X-Api-Key": "<REDACTED>",
+        "Cookie": "session=<REDACTED>",
+        "Proxy-Authorization": "Basic <REDACTED>",
+        "Host": "source.example",
+        "Range": "bytes=10-",
+        "Referer": "https://source.example/page",
+    }
+    redirected = _headers_for_cross_origin_redirect(
+        headers,
+        "https://source.example/audio.flac",
+        "https://cdn.example/audio.flac",
+    )
+    assert redirected == {
+        "Range": "bytes=10-",
+        "Referer": "https://source.example/page",
+    }
+
+
+@pytest.mark.asyncio
 async def test_download_writes_and_verifies_audio(tmp_path: Path) -> None:
     audio = io.BytesIO()
     with wave.open(audio, "wb") as stream:
@@ -148,8 +217,96 @@ async def test_download_writes_and_verifies_audio(tmp_path: Path) -> None:
     await client.aclose()
     path = tmp_path / relative
     assert path.is_file()
+    assert relative == "task.wav"
+    assert not (tmp_path / "track").exists()
     assert size == len(payload)
     assert digest == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_audio_that_does_not_match_advertised_quality(
+    tmp_path: Path,
+) -> None:
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as stream:
+        stream.setnchannels(2)
+        stream.setsampwidth(2)
+        stream.setframerate(44_100)
+        stream.writeframes(b"\0\0" * 2 * 100)
+    payload = audio.getvalue()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=payload, headers={"content-type": "audio/wav"})
+
+    source = _Source([])
+    registry = DownloadSourceRegistry(
+        sources={
+            "aries": DownloadSourceRecord(
+                source_id="aries",
+                name="aries",
+                priority=100,
+                hosts=("example.invalid",),
+                config_schema={},
+                source=source,
+            )
+        }
+    )
+    settings = Settings(boards_yaml=Path("configs/boards.yaml"), music_library_dir=tmp_path)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    worker = DownloadWorker(
+        SimpleNamespace(), client, registry, settings, url_guard=_allow_all_urls
+    )
+    repo = _Repo()
+    task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
+    candidate = DownloadCandidate(
+        source_id="aries",
+        source_track_id="wav",
+        title="晴天",
+        artist="周杰伦",
+        quality=AudioQuality(format="wav", sample_rate_hz=96_000, bit_depth=24),
+    )
+    with pytest.raises(ValueError, match="advertised quality"):
+        await worker._download(task, candidate, repo)
+    await client.aclose()
+    assert not (tmp_path / "task.part").exists()
+    assert not (tmp_path / "task.wav").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_audio_container_that_does_not_match_format(
+    tmp_path: Path,
+) -> None:
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as stream:
+        stream.setnchannels(2)
+        stream.setsampwidth(2)
+        stream.setframerate(44_100)
+        stream.writeframes(b"\0\0" * 2 * 100)
+    payload = audio.getvalue()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=payload, headers={"content-type": "audio/wav"})
+
+    registry = _registry(_RedirectSource("https://example.invalid/audio.flac"), hosts=("example.invalid",))
+    settings = Settings(boards_yaml=Path("configs/boards.yaml"), music_library_dir=tmp_path)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    worker = DownloadWorker(
+        SimpleNamespace(), client, registry, settings, url_guard=_allow_all_urls
+    )
+    repo = _Repo()
+    task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
+    candidate = DownloadCandidate(
+        source_id="aries",
+        source_track_id="flac",
+        title="晴天",
+        artist="周杰伦",
+        quality=AudioQuality(format="flac", sample_rate_hz=44_100, bit_depth=16),
+    )
+    with pytest.raises(ValueError, match="format"):
+        await worker._download(task, candidate, repo)
+    await client.aclose()
+    assert not (tmp_path / "task.part").exists()
+    assert not (tmp_path / "task.flac").exists()
 
 
 async def _reject_everything(_url: str, _hosts: object) -> None:
@@ -219,7 +376,7 @@ async def test_download_rejects_redirect_to_private_host(tmp_path: Path) -> None
     with pytest.raises(ValueError, match="host is not allowed"):
         await worker._download(task, candidate, repo)
     await client.aclose()
-    assert not (tmp_path / "track" / "task.part").exists()
+    assert not (tmp_path / "task.part").exists()
 
 
 @pytest.mark.asyncio

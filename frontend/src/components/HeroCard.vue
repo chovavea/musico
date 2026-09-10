@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { downloadActionState, useTrackDownload } from "../composables/useTrackDownload";
+import { useTrackDownload } from "../composables/useTrackDownload";
 import { useCoverPalette } from "../composables/useCoverTint";
 import { chartShortName, platformLabel } from "../lib/boards";
 import { usePlayerStore } from "../stores/player";
@@ -36,14 +36,14 @@ function onPlay(item?: RankItem) {
 }
 
 function downloadLabel(item: RankItem): string {
-  const state = downloadActionState(item);
+  const state = download.state(item);
   if (state === "ready") return "已下载";
   if (state === "queued") return "队列中";
   return "下载";
 }
 
 function downloadClass(item: RankItem): string {
-  const state = downloadActionState(item);
+  const state = download.state(item);
   if (state === "ready") return "text-emerald-600 dark:text-emerald-300";
   if (state === "queued") return "text-amber-600 dark:text-amber-300";
   return "text-zinc-500";
@@ -135,9 +135,10 @@ function onDownload(item: RankItem) {
                   :class="downloadClass(item)"
                   :aria-label="downloadLabel(item)"
                   :title="downloadLabel(item)"
+                  :disabled="download.state(item) !== 'idle'"
                   @click="onDownload(item)"
                 >
-                  <svg v-if="item.library_status !== 'ready'" viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                  <svg v-if="download.state(item) !== 'ready'" viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" aria-hidden="true">
                     <path d="M8 2.5v7m0 0 2.5-2.5M8 9.5 5.5 7M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
                   </svg>
                   <span v-else aria-hidden="true">✓</span>

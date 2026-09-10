@@ -11,3 +11,30 @@ def test_quality_prefers_dsd_container() -> None:
     dsd = AudioQuality(format="dsf", dsd_rate="DSD64")
     hires_flac = AudioQuality(format="flac", sample_rate_hz=192_000, bit_depth=24)
     assert dsd.sort_key() > hires_flac.sort_key()
+
+
+def test_quality_matching_requires_all_requested_dimensions() -> None:
+    actual = AudioQuality(
+        format="flac",
+        sample_rate_hz=96_000,
+        bit_depth=24,
+        channels=2,
+    )
+    assert actual.matches_requested(
+        AudioQuality(format="flac", sample_rate_hz=96_000, bit_depth=24)
+    )
+    assert not actual.matches_requested(
+        AudioQuality(format="flac", sample_rate_hz=96_000, bit_depth=16)
+    )
+    assert not actual.matches_requested(
+        AudioQuality(format="flac", sample_rate_hz=96_000, bit_depth=24, channels=1)
+    )
+
+
+def test_unknown_source_dimensions_are_deferred_until_download() -> None:
+    advertised = AudioQuality(format="flac")
+    requested = AudioQuality(format="flac", sample_rate_hz=96_000, bit_depth=24)
+    assert advertised.may_match_requested(requested)
+    assert not AudioQuality(
+        format="flac", sample_rate_hz=44_100, bit_depth=16
+    ).may_match_requested(requested)

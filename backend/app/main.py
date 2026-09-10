@@ -78,7 +78,10 @@ def _run_alembic(settings: Settings) -> None:
 
     ini = Path(__file__).resolve().parents[1] / "alembic.ini"
     cfg = Config(str(ini))
-    cfg.set_main_option("sqlalchemy.url", settings.sync_database_url)
+    cfg.set_main_option(
+        "sqlalchemy.url",
+        settings.sync_database_url.replace("%", "%%"),
+    )
     command.upgrade(cfg, "head")
 
 

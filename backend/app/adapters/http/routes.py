@@ -230,7 +230,9 @@ def build_router() -> APIRouter:
         return ok(payload)
 
     @router.get("/preview/{platform}/{external_id}/stream")
-    async def preview_stream(platform: str, external_id: str, request: Request) -> StreamingResponse:
+    async def preview_stream(
+        platform: str, external_id: str, request: Request
+    ) -> StreamingResponse:
         return await stream_official_preview(request, platform, external_id)
 
     @router.post("/downloads")
@@ -299,6 +301,7 @@ def build_router() -> APIRouter:
         deleted = await request.app.state.download_service.delete_asset(asset_id)
         if not deleted:
             return fail(40401, "library asset not found", status_code=404)
+        _invalidate_library_cache(request.app.state.latest_cache)
         return ok({"deleted": True})
 
     @router.get("/health")
@@ -357,6 +360,15 @@ def _find_spec(request: Request, board_id: str) -> BoardSpec | None:
     return None
 
 
+def _invalidate_library_cache(cache: dict[str, Any]) -> None:
+    """Drop chart payloads whose library annotations may have changed."""
+    for key in tuple(cache):
+        if key.startswith("latest:") or (
+            key.startswith("catalog:") and key != "catalog:raw"
+        ):
+            cache.pop(key, None)
+
+
 def _audio_media_type(format_name: str) -> str:
     return {
         "flac": "audio/flac",
@@ -369,7 +381,12 @@ def _audio_media_type(format_name: str) -> str:
 def _download_filename(track: Any, format_name: str, *, inline: bool) -> str:
     title = str(getattr(track, "title", "track") or "track")
     artist = str(getattr(track, "artist", "unknown") or "unknown")
-    clean = lambda value: re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", value).strip(" .")[:120] or "track"
+    def clean(value: str) -> str:
+        return (
+            re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", value).strip(" .")[:120]
+            or "track"
+        )
+
     extension = format_name.lower().lstrip(".")
     suffix = f" [{extension.upper()}]" if not inline else ""
     return f"{clean(title)} - {clean(artist)}{suffix}.{extension}"

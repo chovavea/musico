@@ -20,11 +20,11 @@ class DownloadService:
     async def request(
         self, track: TrackRef, requested_quality: AudioQuality | None = None
     ) -> dict[str, Any]:
-        key = task_idempotency_key(track)
+        key = task_idempotency_key(track, requested_quality)
         async with self._session_factory() as session:
             repo = LibraryRepository(session)
             library_track = await repo.find_or_create_track(track)
-            asset = await repo.get_ready_asset(library_track.id)
+            asset = await repo.get_ready_asset(library_track.id, requested_quality)
             if asset is not None:
                 path = self._asset_path(asset.relative_path)
                 if path.is_file():
@@ -59,10 +59,18 @@ class DownloadService:
                 return repo.task_payload(task, track)
             task.status = "queued"
             task.attempt_count = 0
+            task.bytes_done = 0
+            task.bytes_total = None
             task.next_retry_at = None
             task.last_error = None
             task.completed_at = None
             task.heartbeat_at = None
+            task.lease_token = None
+            task.candidate_snapshot = None
+            task.selected_source_id = None
+            task.selected_source_track_id = None
+            task.selected_quality = None
+            task.source_page_url = None
             await session.commit()
             return repo.task_payload(task, None)
 
