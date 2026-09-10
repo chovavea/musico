@@ -52,6 +52,17 @@ class TrackRef(BaseModel):
     version: str | None = None
 
 
+class TrackQuery(BaseModel):
+    """Free-text lookup used to borrow a preview from another platform."""
+
+    title: str
+    artist: str = ""
+    album: str | None = None
+    duration_ms: int | None = None
+    isrc: str | None = None
+    limit: int = 5
+
+
 class MediaRef(BaseModel):
     url: str | None = None
 

@@ -8,6 +8,18 @@ from urllib.parse import urlparse
 
 MAX_HOPS = 6
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_SENSITIVE_HEADER_MARKERS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "credential",
+    "authorization",
+    "cookie",
+    "private",
+    "certificate",
+    "signing",
+)
 
 
 class OutboundUrlError(ValueError):
@@ -26,7 +38,31 @@ def host_matches(hostname: str, allowed_hosts: Iterable[str]) -> bool:
     )
 
 
-def _reject_unsafe_address(address: str) -> None:
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    port = parsed.port
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme)
+    return scheme, hostname, port
+
+
+def headers_for_redirect(
+    headers: dict[str, str], previous_url: str, next_url: str
+) -> dict[str, str]:
+    """Never forward source credentials to a different origin."""
+    if _origin(previous_url) == _origin(next_url):
+        return headers
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() not in {"host", "proxy-authorization"}
+        and not any(marker in name.lower() for marker in _SENSITIVE_HEADER_MARKERS)
+    }
+
+
+def _reject_unsafe_address(address: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
     try:
         parsed = ipaddress.ip_address(address)
     except ValueError as exc:
@@ -48,7 +84,7 @@ async def _default_resolver(hostname: str) -> list[str]:
         infos = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     except OSError as exc:
         raise OutboundUrlError(f"cannot resolve outbound host: {hostname}") from exc
-    addresses = [info[4][0] for info in infos if len(info) >= 5 and info[4]]
+    addresses = [str(info[4][0]) for info in infos if len(info) >= 5 and info[4]]
     if not addresses:
         raise OutboundUrlError(f"cannot resolve outbound host: {hostname}")
     return addresses

@@ -21,6 +21,18 @@ class Settings(BaseSettings):
     enable_media_resolver: bool = Field(default=False, alias="ENABLE_MEDIA_RESOLVER")
     staleness_multiplier: int = Field(default=2, alias="STALENESS_MULTIPLIER")
     preview_min_interval_sec: float = Field(default=0.1, alias="PREVIEW_MIN_INTERVAL_SEC")
+    preview_cross_platform: bool = Field(default=True, alias="PREVIEW_CROSS_PLATFORM")
+    preview_match_min_score: float = Field(default=0.94, alias="PREVIEW_MATCH_MIN_SCORE")
+    preview_max_candidates: int = Field(default=2, alias="PREVIEW_MAX_CANDIDATES")
+    # One budget for the whole cross-platform attempt, including a late audio open.
+    # Search and parse calls are not capped individually, so this is the only limit
+    # that can end an attempt early.
+    preview_deadline_sec: float = Field(default=60.0, alias="PREVIEW_DEADLINE_SEC")
+    # Ceiling for a single upstream call (search, preview URL parse, opening the
+    # stream). Generous on purpose: a slow answer is still a usable answer.
+    preview_call_timeout_sec: float = Field(default=60.0, alias="PREVIEW_CALL_TIMEOUT_SEC")
+    preview_negative_ttl_sec: int = Field(default=180, alias="PREVIEW_NEGATIVE_TTL_SEC")
+    preview_positive_ttl_sec: int = Field(default=600, alias="PREVIEW_POSITIVE_TTL_SEC")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     boards_yaml: Path = Field(default=Path("/app/configs/boards.yaml"), alias="BOARDS_YAML")
     http_timeout_sec: float = Field(default=15.0, alias="HTTP_TIMEOUT_SEC")

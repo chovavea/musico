@@ -1,6 +1,6 @@
 id = "netease"
 name = "网易云音乐"
-capabilities = ["chart", "preview"]
+capabilities = ["chart", "preview", "search"]
 
 [config_schema]
 required = ["playlist_id"]

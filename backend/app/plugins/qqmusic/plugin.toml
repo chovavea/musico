@@ -1,6 +1,6 @@
 id = "qqmusic"
 name = "QQ音乐"
-capabilities = ["chart", "preview"]
+capabilities = ["chart", "preview", "search"]
 
 [config_schema]
 required = ["top_id"]

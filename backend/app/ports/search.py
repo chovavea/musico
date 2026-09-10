@@ -1,7 +1,7 @@
 from typing import Protocol
 
-from app.domain.models import RawRankItem
+from app.domain.models import TrackQuery, TrackRef
 
 
 class SearchPort(Protocol):
-    async def search(self, q: str) -> list[RawRankItem]: ...
+    async def search(self, query: TrackQuery) -> list[TrackRef]: ...

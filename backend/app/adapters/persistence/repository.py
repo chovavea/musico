@@ -122,6 +122,7 @@ class ChartRepository:
                 external_id=item.external_id,
                 title=item.title,
                 artist=item.artist,
+                duration_ms=item.duration_ms,
                 cover_url=item.cover_url,
                 official_url=item.official_url,
             )
@@ -130,6 +131,7 @@ class ChartRepository:
             return row.id
         row.title = item.title
         row.artist = item.artist
+        row.duration_ms = item.duration_ms or row.duration_ms
         row.cover_url = item.cover_url
         row.official_url = item.official_url
         return row.id
@@ -180,6 +182,7 @@ class ChartRepository:
                     "raw_score": entry.raw_score,
                     "title": song.title,
                     "artist": song.artist,
+                    "duration_ms": song.duration_ms,
                     "cover_url": song.cover_url,
                     "official_url": song.official_url,
                     "external_id": song.external_id,
