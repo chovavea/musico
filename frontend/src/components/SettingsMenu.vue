@@ -3,9 +3,11 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { useHealthStore } from "../stores/health";
 import { useThemeStore } from "../stores/theme";
+import { useDownloadsStore } from "../stores/downloads";
 
 const theme = useThemeStore();
 const health = useHealthStore();
+const downloads = useDownloadsStore();
 const route = useRoute();
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
@@ -33,13 +35,24 @@ function choose(dark: boolean) {
   theme.setDark(dark);
 }
 
+function toggle() {
+  open.value = !open.value;
+  if (open.value) {
+    // 空闲时轮询已停止；打开菜单时刷新一次任务/曲库计数。
+    void downloads.refreshSummary();
+  }
+}
+
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onDocKey);
+  void downloads.refreshSummary();
+  downloads.startPolling();
 });
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onDocKey);
+  downloads.stopPolling();
 });
 </script>
 
@@ -52,14 +65,61 @@ onUnmounted(() => {
       :aria-expanded="open"
       aria-haspopup="dialog"
       aria-label="配置"
-      @click.stop="open = !open"
+      @click.stop="toggle()"
     >
-      <svg viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor" aria-hidden="true">
+      <svg v-if="!downloads.active" viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor" aria-hidden="true">
         <rect x="4" y="6" width="16" height="2.2" rx="1.1" />
         <rect x="4" y="11" width="16" height="2.2" rx="1.1" />
         <rect x="4" y="16" width="16" height="2.2" rx="1.1" />
       </svg>
+      <svg v-else viewBox="0 0 36 36" class="h-7 w-7 -rotate-90" aria-hidden="true">
+        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-opacity=".18" stroke-width="3" />
+        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" :stroke-dasharray="`${downloads.percent * 0.8796} 87.96`" />
+      </svg>
     </button>
+    <div
+      v-if="downloads.failureNotice || downloads.actionError"
+      class="absolute right-0 top-full z-40 mt-2 w-72 space-y-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 shadow-lg ring-1 ring-rose-200 dark:bg-rose-950 dark:text-rose-200 dark:ring-rose-500/30"
+      role="alert"
+    >
+      <div v-if="downloads.actionError" class="flex items-start gap-2">
+        <div class="min-w-0 flex-1">
+          <div class="font-medium">下载操作失败</div>
+          <div class="mt-1 break-words text-xs">{{ downloads.actionError }}</div>
+        </div>
+        <button
+          type="button"
+          class="grid h-7 w-7 shrink-0 place-items-center rounded-full hover:bg-rose-100 dark:hover:bg-rose-900"
+          aria-label="关闭提示"
+          title="关闭提示"
+          @click="downloads.clearActionError()"
+        >
+          ×
+        </button>
+      </div>
+      <div v-if="downloads.failureNotice" class="flex items-start gap-2">
+        <div class="min-w-0 flex-1">
+          <div class="font-medium">下载失败</div>
+          <div class="mt-1 truncate text-xs">{{ downloads.failureNotice.title || "未知歌曲" }}</div>
+          <a
+            v-if="downloads.failureNotice.source_page_url"
+            :href="downloads.failureNotice.source_page_url"
+            target="_blank"
+            rel="noreferrer"
+            class="mt-2 inline-flex text-xs underline"
+          >去源网站</a>
+        </div>
+        <button
+          type="button"
+          class="grid h-7 w-7 shrink-0 place-items-center rounded-full hover:bg-rose-100 dark:hover:bg-rose-900"
+          aria-label="关闭提示"
+          title="关闭提示"
+          @click="downloads.failureNotice = null"
+        >
+          ×
+        </button>
+      </div>
+    </div>
     <div
       v-if="open"
       class="menu-popover absolute right-0 top-full z-30 mt-1.5 w-60 rounded-2xl bg-white p-1.5 shadow-lg ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
@@ -98,6 +158,20 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="mx-2 h-px bg-zinc-100 dark:bg-white/10" role="separator" />
+      <RouterLink
+        to="/library"
+        class="flex h-11 items-center gap-2 rounded-xl px-2 text-sm hover:bg-zinc-100 dark:hover:bg-white/10"
+        :class="route.name === 'library' ? 'bg-zinc-100 dark:bg-white/10' : ''"
+        @click="open = false"
+      >
+        <span class="shrink-0">音乐库</span>
+        <span class="ml-auto text-xs text-zinc-500 dark:text-zinc-400">
+          {{ downloads.active ? `${downloads.percent}%` : `${downloads.summary?.counts.completed ?? 0} 首` }}
+        </span>
+        <svg viewBox="0 0 16 16" class="h-3.5 w-3.5 shrink-0 text-zinc-400" fill="none" aria-hidden="true">
+          <path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </RouterLink>
       <RouterLink
         to="/health"
         class="flex h-11 items-center gap-2 rounded-xl px-2 text-sm hover:bg-zinc-100 dark:hover:bg-white/10"

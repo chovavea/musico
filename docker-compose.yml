@@ -8,9 +8,15 @@ services:
       LOG_LEVEL: INFO
       STALENESS_MULTIPLIER: "2"
       TZ: Asia/Shanghai
+      API_TOKEN: ${API_TOKEN:-}
       BOARDS_YAML: /app/configs/boards.yaml
+      MUSIC_LIBRARY_DIR: /app/data/music
+      DOWNLOAD_SOURCE_CONFIG: /app/configs/download_sources.yaml
+      DOWNLOAD_SOURCE_DIRS: /app/download_sources
     volumes:
       - ./configs:/app/configs:ro
+      - ./data/music:/app/data/music
+      - ./backend/app/download_sources:/app/download_sources:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -29,6 +35,8 @@ services:
     restart: unless-stopped
   postgres:
     image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

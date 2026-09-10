@@ -10,6 +10,8 @@ from app.domain.models import BoardSpec, RawRankItem
 log = structlog.get_logger(__name__)
 
 _TOPLIST_URL = "https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg"
+_DETAIL_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+_COVER_CDN = "https://y.gtimg.cn/music/photo_new"
 
 
 class QQMusicCharts:
@@ -43,14 +45,55 @@ class QQMusicCharts:
         songlist = payload.get("songlist") if isinstance(payload, dict) else None
         if not isinstance(songlist, list):
             raise ValueError("qqmusic toplist payload missing songlist")
+        single_covers: dict[str, str] = {}
+        try:
+            single_covers = await self._fetch_single_covers(top_id)
+        except Exception:
+            log.debug("qqmusic_single_cover_lookup_failed", board_id=board_config.id)
         items: list[RawRankItem] = []
         for index, raw in enumerate(songlist, start=1):
-            parsed = _parse_item(raw, index)
+            parsed = _parse_item(raw, index, single_covers)
             if parsed is None:
                 log.warning("qqmusic_skip_item", board_id=board_config.id, index=index)
                 continue
             items.append(parsed)
         return items
+
+    async def _fetch_single_covers(self, top_id: int) -> dict[str, str]:
+        """查询官方 GetDetail，把每首歌的单曲封面（vs[1]）映射为封面 URL。"""
+        payload = {
+            "comm": {"ct": 24, "cv": 0},
+            "req": {
+                "module": "musicToplist.ToplistInfoServer",
+                "method": "GetDetail",
+                "param": {"topId": top_id, "offset": 0, "num": 100, "period": ""},
+            },
+        }
+        response = await self._client.post(
+            _DETAIL_URL,
+            json=payload,
+            headers={"Referer": "https://y.qq.com"},
+        )
+        response.raise_for_status()
+        body: Any = response.json()
+        req = body.get("req") if isinstance(body, dict) else None
+        data = req.get("data") if isinstance(req, dict) else None
+        song_list = data.get("songInfoList") if isinstance(data, dict) else None
+        if not isinstance(song_list, list):
+            return {}
+        covers: dict[str, str] = {}
+        for track in song_list:
+            if not isinstance(track, dict):
+                continue
+            songmid = track.get("mid")
+            vs = track.get("vs")
+            if not isinstance(songmid, str) or not isinstance(vs, list) or len(vs) < 2:
+                continue
+            cover_mid = vs[1]
+            if not isinstance(cover_mid, str) or not cover_mid:
+                continue
+            covers[songmid] = f"{_COVER_CDN}/T062R300x300M000{cover_mid}.jpg"
+        return covers
 
     async def list_catalog(self) -> list[dict[str, Any]]:
         payload = {
@@ -96,7 +139,11 @@ class QQMusicCharts:
         return result
 
 
-def _parse_item(raw: object, rank: int) -> RawRankItem | None:
+def _parse_item(
+    raw: object,
+    rank: int,
+    single_covers: dict[str, str] | None = None,
+) -> RawRankItem | None:
     if not isinstance(raw, dict):
         return None
     data = raw.get("data")
@@ -116,11 +163,11 @@ def _parse_item(raw: object, rank: int) -> RawRankItem | None:
     if not artist:
         artist = "未知"
     albummid = str(data.get("albummid") or "")
-    cover = (
-        f"https://y.gtimg.cn/music/photo_new/T002R300x300M000{albummid}.jpg"
-        if albummid
-        else None
-    )
+    cover: str | None = None
+    if single_covers and songmid:
+        cover = single_covers.get(str(songmid))
+    if not cover and albummid:
+        cover = f"{_COVER_CDN}/T002R300x300M000{albummid}.jpg"
     preview = data.get("preview") if isinstance(data.get("preview"), str) else None
     raw_score = _optional_float(raw.get("cur_count"))
     return RawRankItem(

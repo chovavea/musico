@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import BoardColumn from "../components/BoardColumn.vue";
 import HeroCard from "../components/HeroCard.vue";
 import { useStalePoll } from "../composables/useStalePoll";
@@ -71,16 +71,18 @@ watch([left, right], ([nextLeft, nextRight]) => {
   void store.ensureLatest(nextRight);
 });
 
+let retryTimer = 0;
 onMounted(() => {
   void store.refreshAll().then(() => {
     applyDefaults();
     if (!leftItems.value.length || !rightItems.value.length) {
-      window.setTimeout(() => {
+      retryTimer = window.setTimeout(() => {
         void store.refreshAll().then(applyDefaults);
       }, 2000);
     }
   });
 });
+onUnmounted(() => window.clearTimeout(retryTimer));
 </script>
 
 <template>

@@ -1,0 +1,236 @@
+import json
+
+import httpx
+import pytest
+from app.domain.models import TrackRef
+from app.download_sources.registry import load_download_sources
+from app.download_sources.source_aries.source import AriesSource
+
+
+@pytest.mark.asyncio
+async def test_aries_source_posts_encoded_search_and_parses_quality_routes() -> None:
+    requests: list[httpx.Request] = []
+    result = {
+        "id": "sky",
+        "name": "晴天",
+        "player": "周杰伦",
+        "album": "叶惠美",
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            assert json.loads(request.content) == {
+                "keyword": "%E6%99%B4%E5%A4%A9",
+                "page": 1,
+            }
+            return httpx.Response(200, json={"status": True, "result": [result]})
+        route = request.url.path.split("/")[2]
+        detail = {
+            "a": ("晴天", "周杰伦", "叶惠美", "iot202.music.126.net", "192000", "24"),
+            "c": ("晴天", "周杰伦", "叶惠美", "m801.music.126.net", "96000", "24"),
+            "b": ("晴天", "周杰伦", "叶惠美", "kw-er.kuwo.cn", "44100", "16"),
+        }[route]
+        title, artist, album, host, sample_rate, bit_depth = detail
+        html = (
+            '<script>self.__next_f.push([1,"{'
+            f'\\"id\\":\\"sky\\",\\"url\\":\\"https://{host}/audio.flac?sig=abc\\",'
+            f'\\"name\\":\\"{title}\\",\\"player\\":\\"{artist}\\",'
+            f'\\"album\\":\\"{album}\\",\\"format\\":\\"flac\\",'
+            f'\\"quality\\":\\"{bit_depth}bit {sample_rate}Hz\\"'
+            '}"])])</script>'
+        )
+        return httpx.Response(200, text=html)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://www.example.invalid")
+    try:
+        source = AriesSource(client, {"max_results": 1})
+        candidates = await source.search(
+            TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
+        )
+        assert len(candidates) == 3
+        assert {item.quality.sample_rate_hz for item in candidates} == {
+            44_100,
+            96_000,
+            192_000,
+        }
+        assert {item.quality.bit_depth for item in candidates} == {16, 24}
+        assert all(item.title == "晴天" and item.artist == "周杰伦" for item in candidates)
+        assert all("download_url" not in item.locator for item in candidates)
+        post_requests = [request for request in requests if request.method == "POST"]
+        assert len(post_requests) == 1
+        assert all(
+            request.headers["content-type"].startswith("application/json")
+            for request in post_requests
+        )
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aries_source_uses_second_search_endpoint_only_as_fallback() -> None:
+    methods: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            methods.append(request.url.path)
+            if request.url.path.endswith("searchOnlineMusicTwo"):
+                return httpx.Response(200, json={"status": True, "result": []})
+            return httpx.Response(
+                200,
+                json={
+                    "status": True,
+                    "result": [{"id": "sky", "name": "晴天", "player": "周杰伦"}],
+                },
+            )
+        html = (
+            '<script>self.__next_f.push([1,"{'
+            '\\"url\\":\\"https://m801.music.126.net/audio.flac?sig=fake\\",'
+            '\\"name\\":\\"晴天\\",\\"player\\":\\"周杰伦\\",\\"format\\":\\"flac\\"'
+            '}"])])</script>'
+        )
+        return httpx.Response(200, text=html)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://www.example.invalid",
+    )
+    try:
+        source = AriesSource(client, {"max_results": 1})
+        candidates = await source.search(
+            TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
+        )
+        assert len(candidates) == 3
+        assert methods == [
+            "/api/player/searchOnlineMusicTwo",
+            "/api/player/searchOnlineMusicOne",
+        ]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aries_source_refreshes_signed_url_and_strips_rsc_escape() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        html = (
+            '<script>self.__next_f.push([1,"{'
+            '\\"id\\":\\"sky\\",\\"url\\":\\"https://m801.music.126.net/audio.flac?sig=fresh\\",'
+            '\\"name\\":\\"晴天\\",\\"player\\":\\"周杰伦\\",\\"format\\":\\"flac\\"'
+            '}"])])</script>'
+        )
+        return httpx.Response(200, text=html)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://www.example.invalid",
+    )
+    try:
+        source = AriesSource(client)
+        candidate = {
+            "source_id": "aries",
+            "source_track_id": "https://www.example.invalid/music/c/sky",
+            "title": "晴天",
+            "artist": "周杰伦",
+            "quality": {"format": "flac", "sample_rate_hz": 96_000, "bit_depth": 24},
+            "locator": {
+                "detail_url": "https://www.example.invalid/music/c/sky",
+                "download_url": "https://m801.music.126.net/audio.flac?sig=stale",
+            },
+        }
+        from app.domain.models import DownloadCandidate
+
+        resolved = await source.resolve(DownloadCandidate.model_validate(candidate), offset=10)
+        assert calls == 1
+        assert resolved.url == "https://m801.music.126.net/audio.flac?sig=fresh"
+        assert resolved.headers["Range"] == "bytes=10-"
+    finally:
+        await client.aclose()
+
+
+def test_aries_quality_parser_does_not_guess_missing_dimensions() -> None:
+    from app.download_sources.source_aries.source import _quality_from_text
+
+    unknown = _quality_from_text("无损音质")
+    assert unknown.format == "flac"
+    assert unknown.sample_rate_hz is None
+    assert unknown.bit_depth is None
+
+    precise = _quality_from_text("24bit 192000Hz")
+    assert precise.format == "flac"
+    assert precise.sample_rate_hz == 192_000
+    assert precise.bit_depth == 24
+
+
+def test_aries_source_uses_explicit_page_quality_when_present() -> None:
+    from app.download_sources.source_aries.source import _extract_page_data
+
+    html = (
+        r'''<script>self.__next_f.push([1,"{\"url\":\"https://m801.music.126.net/'''
+        r'''audio.flac\",\"format\":\"flac\",\"quality\":\"24bit 192000Hz\",'''
+        r'''\"size\":\"52.8MB\"}"])</script>'''
+    )
+    page = _extract_page_data(
+        html,
+        "https://www.example.invalid/music/a/sky",
+    )
+    assert page.quality == "24bit 192000Hz"
+    assert page.size_bytes == int(52.8 * 1024**2)
+
+
+def test_aries_source_can_be_disabled() -> None:
+    client = httpx.AsyncClient()
+    try:
+        registry = load_download_sources(
+            client,
+            config={"sources": [{"id": "aries", "enabled": False}]},
+        )
+        assert "aries" not in registry.sources
+    finally:
+        import asyncio
+
+        asyncio.run(client.aclose())
+
+
+@pytest.mark.asyncio
+async def test_aries_source_rejects_redirect_to_private_page() -> None:
+    requests: list[str] = []
+
+    async def guard(url: str, _hosts: object) -> None:
+        if "127.0.0.1" in url:
+            raise ValueError("outbound address is not public")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "status": True,
+                    "result": [
+                        {
+                            "id": "sky",
+                            "name": "晴天",
+                            "player": "周杰伦",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(302, headers={"location": "http://127.0.0.1/private"})
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://www.example.invalid",
+    )
+    try:
+        source = AriesSource(client, url_guard=guard)
+        candidates = await source.search(
+            TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
+        )
+        assert candidates == []
+        assert all("127.0.0.1" not in url for url in requests)
+    finally:
+        await client.aclose()
