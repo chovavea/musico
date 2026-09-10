@@ -6,6 +6,15 @@ import { usePlayerStore } from "../stores/player";
 const player = usePlayerStore();
 const percent = computed(() => Math.round(player.progress * 1000) / 10);
 const dragging = ref(false);
+const statusText = computed(() => {
+  if (!player.current) return "点击试听或播放本榜";
+  if (player.failed) return "暂无可用试听音源，可去 App 听";
+  if (player.loading) {
+    return player.downloadOnly ? "正在从下载站点查找可用音源…" : "正在加载试听音源…";
+  }
+  if (player.usingOfficial) return "QQ 官方播放器试听";
+  return player.downloadOnly ? `下载站点试听 · ${player.current.artist}` : player.current.artist;
+});
 
 function seekFromPointer(event: PointerEvent) {
   const target = event.currentTarget as HTMLButtonElement;
@@ -95,15 +104,7 @@ function onSeekKey(event: KeyboardEvent) {
         <div class="min-w-0 flex-1">
           <div class="truncate font-medium">{{ player.current?.title ?? "未选择曲目" }}</div>
           <div class="truncate text-sm text-zinc-500 dark:text-zinc-400">
-            {{
-              player.current
-                ? player.failed
-                  ? "这条没有官方试听，可去 App 听完整版"
-                  : player.usingOfficial
-                    ? "QQ 官方播放器试听"
-                    : player.current.artist
-                : "点击试听或播放本榜"
-            }}
+            {{ statusText }}
           </div>
         </div>
         <div
