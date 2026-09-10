@@ -2,7 +2,7 @@ import json
 
 import httpx
 import pytest
-from app.domain.models import TrackRef
+from app.domain.models import AudioQuality, DownloadCandidate, TrackRef
 from app.download_sources.registry import load_download_sources
 from app.download_sources.source_aries.source import AriesSource
 
@@ -63,6 +63,46 @@ async def test_aries_source_posts_encoded_search_and_parses_quality_routes() -> 
             request.headers["content-type"].startswith("application/json")
             for request in post_requests
         )
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aries_source_reports_the_daily_quota_page_instead_of_crashing() -> None:
+    limited = (
+        "<div>今日访问已达限额，可明日再来。</div>"
+        "<div>如果您已注册过，可登录后访问</div>"
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "status": True,
+                    "result": [{"id": "sky", "name": "晴天", "player": "周杰伦"}],
+                },
+            )
+        return httpx.Response(200, text="".join(limited))
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://www.example.invalid",
+    )
+    try:
+        source = AriesSource(client, {"max_results": 1})
+        track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
+        assert await source.search(track) == []
+        candidate = DownloadCandidate(
+            source_id="aries",
+            source_track_id="https://www.example.invalid/music/a/sky",
+            title="晴天",
+            artist="周杰伦",
+            quality=AudioQuality(format="flac"),
+            locator={"detail_url": "https://www.example.invalid/music/a/sky"},
+        )
+        with pytest.raises(ValueError, match="no direct download link"):
+            await source.resolve(candidate)
     finally:
         await client.aclose()
 
@@ -179,6 +219,90 @@ def test_aries_source_uses_explicit_page_quality_when_present() -> None:
     )
     assert page.quality == "24bit 192000Hz"
     assert page.size_bytes == int(52.8 * 1024**2)
+
+
+@pytest.mark.asyncio
+async def test_aries_source_uses_configured_base_url() -> None:
+    requests: list[httpx.Request] = []
+
+    async def allow(_url: str, hosts: object) -> None:
+        assert "mirror.example" in hosts
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "status": True,
+                    "result": [{"id": "sky", "name": "晴天", "player": "周杰伦"}],
+                },
+            )
+        html = (
+            '<script>self.__next_f.push([1,"{'
+            '\\"url\\":\\"https://m801.music.126.net/audio.flac\\",'
+            '\\"name\\":\\"晴天\\",\\"player\\":\\"周杰伦\\",\\"format\\":\\"flac\\"'
+            '}"])])</script>'
+        )
+        return httpx.Response(200, text=html)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://mirror.example",
+    )
+    try:
+        source = AriesSource(
+            client,
+            {"base_url": "https://mirror.example", "max_results": 1},
+            url_guard=allow,
+        )
+        candidates = await source.search(
+            TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
+        )
+        assert candidates
+        assert all(str(request.url).startswith("https://mirror.example/") for request in requests)
+        assert all(request.headers["referer"] == "https://mirror.example/" for request in requests)
+        assert all(
+            item.source_page_url.startswith("https://mirror.example/music/") for item in candidates
+        )
+    finally:
+        await client.aclose()
+
+
+def test_aries_source_registers_configured_base_url_host() -> None:
+    client = httpx.AsyncClient()
+    try:
+        registry = load_download_sources(
+            client,
+            config={
+                "sources": [
+                    {
+                        "id": "aries",
+                        "hosts": ["cdn.mirror.example"],
+                        "config": {"base_url": "https://mirror.example"},
+                    }
+                ]
+            },
+        )
+        source = registry.sources["aries"]
+        assert "mirror.example" in source.hosts
+        assert "cdn.mirror.example" in source.hosts
+        assert source.source._base_url == "https://mirror.example"
+    finally:
+        import asyncio
+
+        asyncio.run(client.aclose())
+
+
+def test_aries_source_rejects_invalid_base_url() -> None:
+    client = httpx.AsyncClient()
+    try:
+        with pytest.raises(ValueError, match="base_url"):
+            AriesSource(client, {"base_url": "ftp://mirror.example"})
+    finally:
+        import asyncio
+
+        asyncio.run(client.aclose())
 
 
 def test_aries_source_can_be_disabled() -> None:

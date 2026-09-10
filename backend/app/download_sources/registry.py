@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -88,15 +89,35 @@ def load_download_sources(
                 module = importlib.util.module_from_spec(module_spec)
                 module_spec.loader.exec_module(module)
             factory = getattr(module, factory_name)
-            hosts = tuple(str(item).lower() for item in data.get("hosts", []))
+            source_config = dict(settings.get("config") or {})
             record = DownloadSourceRecord(
                 source_id=source_id,
                 name=str(data.get("name", source_id)),
                 priority=int(settings.get("priority", data.get("priority", 0))),
-                hosts=hosts,
+                hosts=_merged_hosts(data.get("hosts", []), settings, source_config),
                 config_schema=dict(data.get("config_schema") or {}),
-                source=factory(client, dict(settings.get("config") or {})),
+                source=factory(client, source_config),
             )
             registry.sources[source_id] = record
             log.info("download_source_loaded", source_id=source_id)
     return registry
+
+
+def _merged_hosts(
+    manifest_hosts: object,
+    settings: dict[str, Any],
+    source_config: dict[str, Any],
+) -> tuple[str, ...]:
+    hosts: list[str] = []
+    for group in (manifest_hosts, settings.get("hosts")):
+        if not isinstance(group, list):
+            continue
+        hosts.extend(str(item).lower().rstrip(".") for item in group if str(item).strip())
+    base_url = str(source_config.get("base_url") or "").strip()
+    if base_url:
+        hostname = (urlparse(base_url).hostname or "").lower().rstrip(".")
+        if hostname:
+            hosts.append(hostname)
+            if hostname.startswith("www."):
+                hosts.append(hostname.removeprefix("www."))
+    return tuple(dict.fromkeys(item for item in hosts if item))

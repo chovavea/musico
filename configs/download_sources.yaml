@@ -2,3 +2,6 @@ sources:
   - id: aries
     enabled: true
     priority: 100
+    config:
+      base_url: https://www.example.invalid
+      max_results: 8

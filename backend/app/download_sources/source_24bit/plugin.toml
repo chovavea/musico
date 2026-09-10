@@ -6,3 +6,4 @@ hosts = ["example.invalid", "www.example.invalid", "music.126.net", "kuwo.cn"]
 
 [config_schema]
 max_results = 8
+base_url = "https://www.example.invalid"
