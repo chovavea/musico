@@ -6,6 +6,7 @@ import {
   type QQOfficialEvent,
   type QQOfficialPlayer,
 } from "../lib/qq-official-player";
+import { useDownloadsStore } from "./downloads";
 import type { RankItem } from "../types";
 
 function sameTrack(left: RankItem, right: RankItem): boolean {
@@ -13,7 +14,10 @@ function sameTrack(left: RankItem, right: RankItem): boolean {
 }
 
 function hasLocalAsset(item: RankItem): boolean {
-  return Boolean(item.library_asset_id && item.library_status === "ready");
+  if (!item.library_asset_id || item.library_status !== "ready") {
+    return false;
+  }
+  return !useDownloadsStore().deletedAssetIds[item.library_asset_id];
 }
 
 function streamUrl(item: RankItem): string {

@@ -78,11 +78,26 @@ onUnmounted(() => {
       </svg>
     </button>
     <div
-      v-if="downloads.failureNotice"
-      class="absolute right-0 top-full z-40 mt-2 w-72 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 shadow-lg ring-1 ring-rose-200 dark:bg-rose-950 dark:text-rose-200 dark:ring-rose-500/30"
+      v-if="downloads.failureNotice || downloads.actionError"
+      class="absolute right-0 top-full z-40 mt-2 w-72 space-y-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 shadow-lg ring-1 ring-rose-200 dark:bg-rose-950 dark:text-rose-200 dark:ring-rose-500/30"
       role="alert"
     >
-      <div class="flex items-start gap-2">
+      <div v-if="downloads.actionError" class="flex items-start gap-2">
+        <div class="min-w-0 flex-1">
+          <div class="font-medium">下载操作失败</div>
+          <div class="mt-1 break-words text-xs">{{ downloads.actionError }}</div>
+        </div>
+        <button
+          type="button"
+          class="grid h-7 w-7 shrink-0 place-items-center rounded-full hover:bg-rose-100 dark:hover:bg-rose-900"
+          aria-label="关闭提示"
+          title="关闭提示"
+          @click="downloads.clearActionError()"
+        >
+          ×
+        </button>
+      </div>
+      <div v-if="downloads.failureNotice" class="flex items-start gap-2">
         <div class="min-w-0 flex-1">
           <div class="font-medium">下载失败</div>
           <div class="mt-1 truncate text-xs">{{ downloads.failureNotice.title || "未知歌曲" }}</div>

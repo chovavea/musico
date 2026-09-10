@@ -81,6 +81,26 @@ class AudioQuality(BaseModel):
             1 if self.dsd_rate else 0,
         )
 
+    def matches_requested(self, requested: AudioQuality) -> bool:
+        if self.format.lower().lstrip(".") != requested.format.lower().lstrip("."):
+            return False
+        for field_name in ("sample_rate_hz", "bit_depth", "channels", "dsd_rate"):
+            expected = getattr(requested, field_name)
+            if expected is not None and getattr(self, field_name) != expected:
+                return False
+        return True
+
+    def may_match_requested(self, requested: AudioQuality) -> bool:
+        """Allow source metadata to omit dimensions verified after download."""
+        if self.format.lower().lstrip(".") != requested.format.lower().lstrip("."):
+            return False
+        for field_name in ("sample_rate_hz", "bit_depth", "channels", "dsd_rate"):
+            actual = getattr(self, field_name)
+            expected = getattr(requested, field_name)
+            if actual is not None and expected is not None and actual != expected:
+                return False
+        return True
+
 
 class DownloadCandidate(BaseModel):
     source_id: str

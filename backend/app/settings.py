@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     )
 
     database_url: str = Field(
-        default="postgresql+psycopg://musico:musico@127.0.0.1:5432/musico",
+        default="postgresql+psycopg://musico@127.0.0.1:5432/musico",
         alias="DATABASE_URL",
     )
     db_pool_size: int = Field(default=10, alias="DB_POOL_SIZE")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
+from app.adapters.http.routes import _invalidate_library_cache
 from app.main import create_app
 from app.services.boards_config import BoardsConfigError, load_raw_boards, parse_board_specs
 from app.settings import Settings
@@ -44,3 +44,16 @@ def test_media_resolver_without_impl_exits(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as exc:
         create_app(settings, start_scheduler=False, run_migrations=False)
     assert exc.value.code == 1
+
+
+def test_library_cache_invalidation_keeps_catalog_definition_cache() -> None:
+    cache = {
+        "latest:board": {"data": {}},
+        "catalog:qqmusic:hot": {"data": {}},
+        "catalog:raw": {"data": {}},
+        "unrelated": {"data": {}},
+    }
+
+    _invalidate_library_cache(cache)
+
+    assert set(cache) == {"catalog:raw", "unrelated"}

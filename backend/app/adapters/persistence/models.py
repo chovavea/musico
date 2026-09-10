@@ -174,6 +174,8 @@ class LibraryAssetRow(LibraryBase):
             "format",
             "sample_rate_hz",
             "bit_depth",
+            "channels",
+            "dsd_rate",
             name="uq_library_asset_quality",
         ),
         Index("ix_library_asset_track_status", "library_track_id", "status"),
