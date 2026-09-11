@@ -130,7 +130,7 @@ def test_qq_search_payload_sends_the_web_client_credentials() -> None:
     assert request["param"]["num_per_page"] == 5
 
 
-async def test_netease_search_calls_the_public_search_endpoint() -> None:
+async def test_netease_search_posts_to_cloud_search_endpoint() -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -140,9 +140,10 @@ async def test_netease_search_calls_the_public_search_endpoint() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         tracks = await NeteaseSearch(client).search(QUERY)
     assert [track.external_id for track in tracks] == ["287398", "34200624"]
-    assert seen[0].url.path == "/api/search/get"
-    assert seen[0].url.params["s"] == "我不难过 孙燕姿"
-    assert seen[0].url.params["limit"] == "5"
+    assert seen[0].method == "POST"
+    assert seen[0].url.path == "/api/cloudsearch/pc"
+    assert b"s=%E6%88%91%E4%B8%8D%E9%9A%BE%E8%BF%87+%E5%AD%99%E7%87%95%E5%A7%BF" in seen[0].content
+    assert b"limit=5" in seen[0].content
 
 
 async def test_qq_search_posts_the_search_request_with_a_referer() -> None:

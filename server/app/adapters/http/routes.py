@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, field_validator
 
+from app.adapters.http.cover import cover_image_response
 from app.adapters.http.envelope import fail, ok
 from app.adapters.http.preview import stream_preview
 from app.adapters.persistence.repository import ChartRepository
@@ -101,6 +102,14 @@ def build_router() -> APIRouter:
                 limit=limit,
             )
         )
+
+    @router.get("/cover-image")
+    async def cover_image(
+        request: Request,
+        url: str = Query(max_length=2048),
+        size: int = Query(default=150),
+    ) -> Response:
+        return await cover_image_response(request, url, size)
 
     @router.get("/boards")
     async def boards(request: Request) -> Any:
@@ -216,9 +225,7 @@ def build_router() -> APIRouter:
         async with request.app.state.session_factory() as session:
             repo = ChartRepository(session)
             keys = catalog_chart_keys(groups, await repo.catalog_order_map(platform))
-            moved = await repo.reorder_catalog_chart(
-                platform, chart_key, payload.before_key, keys
-            )
+            moved = await repo.reorder_catalog_chart(platform, chart_key, payload.before_key, keys)
             if not moved:
                 return fail(40401, "chart not found", status_code=404)
             await session.commit()
@@ -411,9 +418,7 @@ def _find_spec(request: Request, board_id: str) -> BoardSpec | None:
 def _invalidate_library_cache(cache: dict[str, Any]) -> None:
     """Drop chart payloads whose library annotations may have changed."""
     for key in tuple(cache):
-        if key.startswith("latest:") or (
-            key.startswith("catalog:") and key != "catalog:raw"
-        ):
+        if key.startswith("latest:") or (key.startswith("catalog:") and key != "catalog:raw"):
             cache.pop(key, None)
 
 
@@ -428,11 +433,9 @@ def _audio_media_type(format_name: str) -> str:
 def _download_filename(track: Any, format_name: str, *, inline: bool) -> str:
     title = str(getattr(track, "title", "track") or "track")
     artist = str(getattr(track, "artist", "unknown") or "unknown")
+
     def clean(value: str) -> str:
-        return (
-            re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", value).strip(" .")[:120]
-            or "track"
-        )
+        return re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", value).strip(" .")[:120] or "track"
 
     extension = format_name.lower().lstrip(".")
     suffix = f" [{extension.upper()}]" if not inline else ""

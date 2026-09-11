@@ -421,6 +421,8 @@ test("pausing while the official SDK is loading cancels its pending playback", a
   assert.deepEqual(FakeOfficial.instance.playCalls, []);
   assert.equal(store.playing, false);
   assert.equal(store.loading, false);
+  assert.equal(store.loadState, "cancelled");
+  assert.equal(store.loadCancelled, true);
   assert.equal(store.officialTimer, null);
 });
 
@@ -434,4 +436,34 @@ test("browser autoplay rejection is not treated as a missing source", async () =
   store.toggle();
   await settle();
   assert.equal(store.playing, true);
+});
+
+test("queue boundaries expose navigation state without pausing the final song", async () => {
+  const final = { ...netease, external_id: "final" };
+  store.play(netease, [netease, final]);
+  await settle();
+  assert.equal(store.hasPrev, false);
+  assert.equal(store.hasNext, true);
+
+  store.next();
+  await settle();
+  const pauseCalls = store.audio.pauseCalls;
+  assert.equal(store.current.external_id, final.external_id);
+  assert.equal(store.hasPrev, true);
+  assert.equal(store.hasNext, false);
+
+  store.next();
+  assert.equal(store.current.external_id, final.external_id);
+  assert.equal(store.index, 1);
+  assert.equal(store.playing, true);
+  assert.equal(store.audio.pauseCalls, pauseCalls);
+});
+
+test("openOfficial reports whether a new tab was opened", () => {
+  const item = { ...netease, official_url: "https://music.example/track" };
+  window.open = () => ({});
+  assert.equal(store.openOfficial(item), true);
+  window.open = () => null;
+  assert.equal(store.openOfficial(item), false);
+  assert.equal(store.openOfficial({ ...item, official_url: null }), false);
 });

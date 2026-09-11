@@ -71,6 +71,7 @@ export const usePlayerStore = defineStore("player", {
     playbackId: 0,
     downloadOnly: false,
     loading: false,
+    loadState: "idle" as "idle" | "loading" | "ready" | "cancelled" | "failed",
     wantsPlayback: false,
     officialTimer: null as ReturnType<typeof setTimeout> | null,
   }),
@@ -78,6 +79,9 @@ export const usePlayerStore = defineStore("player", {
     canPreview: () => previewPlayable,
     progress: (state) => (state.duration > 0 ? state.currentTime / state.duration : 0),
     hasQueue: (state) => state.queue.length > 1,
+    hasPrev: (state) => state.index > 0,
+    hasNext: (state) => state.index >= 0 && state.index + 1 < state.queue.length,
+    loadCancelled: (state) => state.loadState === "cancelled",
     usingOfficial: (state) => Boolean(state.current && state.playbackMode === "official"),
   },
   actions: {
@@ -166,6 +170,7 @@ export const usePlayerStore = defineStore("player", {
         }
         this.clearOfficialTimer();
         this.loading = false;
+        this.loadState = "ready";
         this.playing = true;
         this.failed = false;
         this.failStreak = 0;
@@ -239,6 +244,7 @@ export const usePlayerStore = defineStore("player", {
       this.playbackId += 1;
       this.failed = false;
       this.loading = true;
+      this.loadState = "loading";
       this.wantsPlayback = true;
       this.downloadOnly = false;
       this.current = item;
@@ -260,6 +266,7 @@ export const usePlayerStore = defineStore("player", {
       this.playbackMode = "stream";
       this.downloadOnly = downloadOnly;
       this.loading = true;
+      this.loadState = "loading";
       this.playing = false;
       pauseQQOfficialPlayer();
       const audio = this.ensureAudio();
@@ -274,6 +281,7 @@ export const usePlayerStore = defineStore("player", {
             return;
           }
           this.loading = false;
+          this.loadState = "ready";
           this.playing = true;
           this.failStreak = 0;
         },
@@ -304,6 +312,7 @@ export const usePlayerStore = defineStore("player", {
       // state: skipping ahead would hide that no source could be played.
       this.playing = false;
       this.loading = false;
+      this.loadState = "failed";
       this.failed = true;
       this.wantsPlayback = false;
       this.failStreak += 1;
@@ -324,10 +333,12 @@ export const usePlayerStore = defineStore("player", {
       }
     },
     pause() {
+      const cancelledLoading = this.loading;
       this.playbackId += 1;
       this.clearOfficialTimer();
       this.wantsPlayback = false;
       this.loading = false;
+      this.loadState = cancelledLoading ? "cancelled" : this.current ? "ready" : "idle";
       this.playing = false;
       this.audio?.pause();
       pauseQQOfficialPlayer();
@@ -347,6 +358,7 @@ export const usePlayerStore = defineStore("player", {
       }
       this.wantsPlayback = true;
       this.loading = true;
+      this.loadState = "loading";
       if (this.usingOfficial) {
         const official = getQQOfficialPlayer();
         if (!official || official.data?.song?.mid !== this.current.external_id) {
@@ -366,7 +378,6 @@ export const usePlayerStore = defineStore("player", {
     },
     next() {
       if (this.index + 1 >= this.queue.length) {
-        this.pause();
         return;
       }
       this.index += 1;
@@ -403,9 +414,12 @@ export const usePlayerStore = defineStore("player", {
       this.audio.currentTime = next;
       this.currentTime = next;
     },
-    openOfficial(item: RankItem) {
-      if (item.official_url) {
-        window.open(item.official_url, "_blank", "noopener");
+    openOfficial(item: RankItem): boolean {
+      if (!item.official_url) return false;
+      try {
+        return window.open(item.official_url, "_blank", "noopener") !== null;
+      } catch {
+        return false;
       }
     },
   },

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from app.domain.models import TrackRef
 from app.plugins._registry import PluginRecord, PluginRegistry
 from app.services.search import SearchService
@@ -115,6 +114,95 @@ async def test_search_reports_partial_provider_failure_without_hiding_results() 
     assert payload["partial"] is True
     assert payload["items"][0]["external_id"] == "qq-1"
     assert [item["status"] for item in payload["platforms"]] == ["ok", "error"]
+
+
+@pytest.mark.asyncio
+async def test_search_filters_unrelated_provider_fallbacks() -> None:
+    netease = FakeSearch(
+        [
+            track("netease", "unrelated", title="后来", artist="刘若英"),
+            track("netease", "partial", title="我不难过 (Live)", artist="孙燕姿"),
+        ]
+    )
+    service = service_with(
+        PluginRecord("netease", "网易云音乐", ["search"], {}, search=netease),  # type: ignore[arg-type]
+    )
+
+    payload = await service.search("不难过", kind="full")
+
+    assert [item["external_id"] for item in payload["items"]] == ["partial"]
+    assert payload["platforms"][0]["result_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_matches_title_and_artist_terms_in_either_order() -> None:
+    qq = FakeSearch(
+        [
+            track("qqmusic", "match"),
+            track("qqmusic", "wrong-artist", artist="张惠妹"),
+        ]
+    )
+    service = service_with(
+        PluginRecord("qqmusic", "QQ音乐", ["search"], {}, search=qq),  # type: ignore[arg-type]
+    )
+
+    payload = await service.search("孙燕姿 我不难过")
+
+    assert [item["external_id"] for item in payload["items"]] == ["match"]
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_provider_hits_for_cross_script_queries() -> None:
+    netease = FakeSearch(
+        [
+            track("netease", "jay-1", title="晴天", artist="周杰伦"),
+            track("netease", "jay-2", title="屋顶", artist="周杰伦 / 温岚"),
+        ]
+    )
+    service = service_with(
+        PluginRecord("netease", "网易云音乐", ["search"], {}, search=netease),  # type: ignore[arg-type]
+    )
+
+    payload = await service.search("Jay Chou")
+
+    assert [item["external_id"] for item in payload["items"]] == ["jay-1", "jay-2"]
+    assert payload["platforms"][0]["result_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_search_matches_simplified_query_to_traditional_artist() -> None:
+    netease = FakeSearch(
+        [
+            track("netease", "lemon", title="Lemon", artist="米津玄師"),
+            track("netease", "unrelated", title="后来", artist="刘若英"),
+        ]
+    )
+    service = service_with(
+        PluginRecord("netease", "网易云音乐", ["search"], {}, search=netease),  # type: ignore[arg-type]
+    )
+
+    payload = await service.search("Lemon 米津玄师")
+
+    assert [item["external_id"] for item in payload["items"]] == ["lemon"]
+    assert payload["platforms"][0]["result_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_drops_unrelated_hits_for_cjk_queries() -> None:
+    netease = FakeSearch(
+        [
+            track("netease", "hot-1", title="后来", artist="刘若英"),
+            track("netease", "hot-2", title="平凡之路", artist="朴树"),
+        ]
+    )
+    service = service_with(
+        PluginRecord("netease", "网易云音乐", ["search"], {}, search=netease),  # type: ignore[arg-type]
+    )
+
+    payload = await service.search("晴天")
+
+    assert payload["items"] == []
+    assert payload["platforms"][0]["result_count"] == 0
 
 
 @pytest.mark.asyncio

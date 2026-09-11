@@ -7,9 +7,21 @@ def test_normalize_text_removes_version_noise() -> None:
 
 
 def test_track_matching_requires_artist_and_duration() -> None:
-    source = TrackRef(platform="chart", external_id="1", title="晴天", artist="周杰伦", duration_ms=240000)
-    assert is_auto_match(source, TrackRef(platform="source", external_id="2", title="晴天", artist="周杰伦", duration_ms=242000))
-    assert not is_auto_match(source, TrackRef(platform="source", external_id="3", title="晴天", artist="其他", duration_ms=240000))
+    source = TrackRef(
+        platform="chart", external_id="1", title="晴天", artist="周杰伦", duration_ms=240_000
+    )
+    assert is_auto_match(
+        source,
+        TrackRef(
+            platform="source", external_id="2", title="晴天", artist="周杰伦", duration_ms=242_000
+        ),
+    )
+    assert not is_auto_match(
+        source,
+        TrackRef(
+            platform="source", external_id="3", title="晴天", artist="其他", duration_ms=240_000
+        ),
+    )
 
 
 def test_same_recording_keeps_live_and_remix_apart_from_studio() -> None:
@@ -22,7 +34,13 @@ def test_same_recording_keeps_live_and_remix_apart_from_studio() -> None:
     )
     assert is_same_recording(
         studio,
-        TrackRef(platform="qqmusic", external_id="qq-1", title="我不难过", artist="孙燕姿", duration_ms=320_400),
+        TrackRef(
+            platform="qqmusic",
+            external_id="qq-1",
+            title="我不难过",
+            artist="孙燕姿",
+            duration_ms=320_400,
+        ),
     )
     assert not is_same_recording(
         studio,

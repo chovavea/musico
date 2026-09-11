@@ -2,13 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 import { chartShortName, platformLabel } from "../lib/boards";
-import { rowGridClass } from "../lib/list-grid";
+import { useChartsStore } from "../stores/charts";
 import { usePlayerStore } from "../stores/player";
 import type { BoardInfo, LatestBoard } from "../types";
 import HeroCard from "./HeroCard.vue";
 import RankRow from "./RankRow.vue";
 import BoardChartPicker from "./BoardChartPicker.vue";
 import type { CatalogGroup } from "../types";
+import AppIcon from "./AppIcon.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -19,6 +20,7 @@ const props = withDefaults(
   }>(),
   { showHero: true },
 );
+const charts = useChartsStore();
 
 const emit = defineEmits<{
   pick: [key: string];
@@ -75,7 +77,7 @@ const staleLabel = computed(() => {
     <HeroCard v-if="showHero" :board="board" :latest="latest" class="mb-4" />
     <div class="mb-3 flex items-end justify-between gap-3">
       <div class="min-w-0">
-        <p class="text-xs font-medium text-zinc-500">{{ platformLabel(board.platform) }}</p>
+        <p class="text-xs font-medium text-secondary">{{ platformLabel(board.platform) }}</p>
         <BoardChartPicker
           v-if="pickerGroups?.length && board.chart_key"
           :name="chartShortName(board.name)"
@@ -102,9 +104,7 @@ const staleLabel = computed(() => {
           :title="`播放本榜：${board.name}`"
           @click="allItems[0] && player.play(allItems[0], allItems)"
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true" class="h-3.5 w-3.5 shrink-0 fill-current">
-            <path d="M5 3.3 12.2 8 5 12.7V3.3Z" />
-          </svg>
+          <AppIcon name="play" :size="16" />
           播放本榜
         </button>
       </div>
@@ -113,7 +113,7 @@ const staleLabel = computed(() => {
       class="overflow-hidden rounded-2xl bg-white ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
     >
       <div
-        :class="[rowGridClass, 'gap-3 border-b border-zinc-100 px-3 py-2 text-xs text-zinc-400 dark:border-white/5']"
+        class="hidden gap-3 border-b border-zinc-100 px-3 py-2 text-xs text-secondary sm:grid sm:grid-cols-[2.25rem_2.75rem_minmax(0,1fr)_9rem] dark:border-white/5"
       >
         <span class="text-right">排名</span>
         <span />
@@ -129,7 +129,17 @@ const staleLabel = computed(() => {
         />
       </div>
       <div v-if="hasMore" ref="sentinel" class="h-4" aria-hidden="true" />
-      <div v-if="!items.length" class="space-y-3 px-3 py-4">
+      <div
+        v-if="!items.length && charts.latestErrors[board.id]"
+        role="alert"
+        class="px-4 py-8 text-center text-sm text-rose-700 dark:text-rose-300"
+      >
+        <p>{{ charts.latestErrors[board.id] }}</p>
+        <button type="button" class="mt-3 h-11 rounded-full px-4 font-medium underline" @click="charts.ensureLatest(board)">
+          重新加载
+        </button>
+      </div>
+      <div v-else-if="!items.length" class="space-y-3 px-3 py-4">
         <div v-for="n in 8" :key="n" class="flex items-center gap-3">
           <div class="skel h-4 w-6" />
           <div class="skel h-11 w-11 rounded-lg" />
@@ -138,7 +148,7 @@ const staleLabel = computed(() => {
             <div class="skel h-3 w-1/3" />
           </div>
         </div>
-        <p class="text-center text-sm text-zinc-500">暂无条目，采集完成后会填满这张表</p>
+        <p v-if="!charts.latestLoading[board.id]" class="text-center text-sm text-secondary">暂无条目，采集完成后会填满这张表</p>
       </div>
     </div>
   </section>

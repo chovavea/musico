@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.adapters.persistence.models import Base
 from app.adapters.persistence.repository import ChartRepository
 from app.domain.models import BoardSpec, RawRankItem
 from app.plugins._registry import PluginRecord, PluginRegistry
 from app.services.collect import CollectService
 from app.settings import Settings
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
 class _FakeChart:

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import importlib
 import tomllib
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import structlog
@@ -69,23 +68,19 @@ def load_registry(client: httpx.AsyncClient) -> PluginRegistry:
             capabilities=capabilities,
             config_schema=schema,
         )
+        module: Any
         if "chart" in capabilities:
             module = importlib.import_module(f"{package}.charts")
-            factory = getattr(module, "create_chart")
-            chart = factory(client)
-            record.chart = chart
+            record.chart = module.create_chart(client)
         if "preview" in capabilities:
             module = importlib.import_module(f"{package}.preview")
-            factory = getattr(module, "create_preview")
-            record.preview = factory(client)
+            record.preview = module.create_preview(client)
         if "media" in capabilities:
             module = importlib.import_module(f"{package}.media")
-            factory = getattr(module, "create_media")
-            record.media = factory(client)
+            record.media = module.create_media(client)
         if "search" in capabilities:
             module = importlib.import_module(f"{package}.search")
-            factory = getattr(module, "create_search")
-            record.search = factory(client)
+            record.search = module.create_search(client)
         registry.plugins[plugin_id] = record
         log.info("plugin_loaded", plugin_id=plugin_id, capabilities=capabilities)
     return registry

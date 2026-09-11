@@ -218,7 +218,8 @@ class ChartRepository:
             for title, artist in clauses
         ]
         try:
-            tracks_result = await self._session.execute(select(LibraryTrackRow).where(or_(*filters)))
+            statement = select(LibraryTrackRow).where(or_(*filters))
+            tracks_result = await self._session.execute(statement)
             tracks = {track.id: track for track in tracks_result.scalars().all()}
             if not tracks:
                 return

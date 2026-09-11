@@ -27,9 +27,10 @@ class QQMusicPreview:
 
     async def preview(self, track: TrackRef) -> PreviewInfo:
         for prefix, suffix, quality in _FORMATS:
+            filename = vkey_filename(track.external_id, prefix, suffix)
             response = await self._client.post(
                 _MUSICU_URL,
-                json=vkey_payload(track.external_id, vkey_filename(track.external_id, prefix, suffix)),
+                json=vkey_payload(track.external_id, filename),
                 headers=_HEADERS,
             )
             response.raise_for_status()

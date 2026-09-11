@@ -1,5 +1,6 @@
 import { computed, onMounted, ref, watch, type Ref } from "vue";
 import { storeToRefs } from "pinia";
+import { coverImageUrl } from "../lib/cover-image";
 import { useThemeStore } from "../stores/theme";
 
 export type CoverPalette = {
@@ -151,8 +152,8 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 function sourcesFor(url: string): string[] {
-  const encoded = encodeURIComponent(url);
-  return [`/cover-proxy?url=${encoded}`, `/api/v1/cover-image?url=${encoded}`, url];
+  const proxied = coverImageUrl(url, 150);
+  return proxied ? [proxied] : [];
 }
 
 async function extractRgb(url: string): Promise<RGB | null> {

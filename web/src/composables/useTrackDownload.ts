@@ -52,9 +52,12 @@ export function useTrackDownload() {
         downloads.markLocalQueued(key, result.task?.id);
       } else {
         downloads.clearLocalState(key);
-        downloads.setActionError(
-          result.task?.last_error || "下载任务未进入可执行状态",
-        );
+        // enqueue() already stored response.msg / transport errors on failed.
+        if (result.state !== "failed" || !downloads.actionError) {
+          downloads.setActionError(
+            result.task?.last_error || "下载任务未进入可执行状态",
+          );
+        }
       }
     } catch (error) {
       downloads.clearLocalState(key);
