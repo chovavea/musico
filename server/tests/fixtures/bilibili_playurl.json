@@ -1,0 +1,12 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "durl": [
+      {
+        "url": "https://upos-sz-estgcos.bilivideo.com/upgcxcode/example.mp4",
+        "size": 123456
+      }
+    ]
+  }
+}

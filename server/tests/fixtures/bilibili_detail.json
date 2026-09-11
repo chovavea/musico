@@ -1,0 +1,10 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "support_listen": true,
+    "mv_aid": 123456789,
+    "mv_cid": 987654321,
+    "mv_bvid": "BV1xx411c7mD"
+  }
+}

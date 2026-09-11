@@ -1,1 +1,0 @@
-"""Musico backend package."""

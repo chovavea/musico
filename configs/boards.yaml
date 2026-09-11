@@ -15,6 +15,13 @@ boards:
     overview_slot: right
     interval_sec: 3600
     extra: { playlist_id: "3778678" }
+  - id: bilibili_hot
+    platform: bilibili
+    name: 哔哩哔哩音乐热歌榜
+    type: hot
+    enabled: true
+    interval_sec: 3600
+    extra: { list_type: 1 }
   - id: qq_douyin
     platform: qqmusic
     name: QQ音乐抖音热歌榜

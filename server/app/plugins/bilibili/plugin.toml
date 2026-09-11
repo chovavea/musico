@@ -1,0 +1,9 @@
+id = "bilibili"
+name = "哔哩哔哩音乐"
+capabilities = ["chart", "preview"]
+
+[config_schema]
+required = ["list_type"]
+
+[config_schema.types]
+list_type = "int"

@@ -1,0 +1,32 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "list": [
+      {
+        "rank": 1,
+        "music_id": "MA420104467149518209",
+        "music_title": "Life Goes On",
+        "singer": "Oliver Tree",
+        "album": "Ugly is Beautiful",
+        "creation_duration": 209,
+        "mv_cover": "https://i0.hdslb.com/bfs/music/example.jpg",
+        "heat": 808964
+      },
+      {
+        "rank": 2,
+        "music_id": "MA480115070962027904",
+        "music_title": "海屿你",
+        "singer": "Cole先生,马也_Crabbit",
+        "album": "海屿你",
+        "creation_duration": "84",
+        "creation_cover": "https://i0.hdslb.com/bfs/music/example-2.jpg",
+        "heat": "1873969"
+      },
+      {
+        "rank": 3,
+        "music_title": "missing music id"
+      }
+    ]
+  }
+}

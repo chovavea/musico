@@ -1,8 +1,8 @@
-FROM node:22-alpine AS frontend
+FROM node:22-alpine AS web
 WORKDIR /web
-COPY frontend/package.json ./
+COPY web/package.json ./
 RUN npm install
-COPY frontend/ ./
+COPY web/ ./
 RUN npm run build
 
 FROM python:3.12-alpine AS wheels
@@ -22,15 +22,15 @@ RUN pip install --no-cache-dir --prefix=/install \
       "mutagen>=1.47.0"
 
 FROM python:3.12-alpine
-WORKDIR /app/backend
+WORKDIR /app/server
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY --from=wheels /install /usr/local
-COPY backend/app ./app
-COPY backend/alembic ./alembic
-COPY backend/alembic.ini ./alembic.ini
-COPY --from=frontend /web/dist /app/frontend/dist
+COPY server/app ./app
+COPY server/alembic ./alembic
+COPY server/alembic.ini ./alembic.ini
+COPY --from=web /web/dist /app/web/dist
 COPY configs /app/configs
-COPY backend/app/download_sources /app/download_sources
+COPY server/app/download_sources /app/download_sources
 ENV BOARDS_YAML=/app/configs/boards.yaml
 ENV DOWNLOAD_SOURCE_CONFIG=/app/configs/download_sources.yaml DOWNLOAD_SOURCE_DIRS=/app/download_sources
 ENV MUSIC_LIBRARY_DIR=/app/data/music

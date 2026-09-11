@@ -1,6 +1,6 @@
 # musico
 
-自托管音乐热榜：QQ 音乐热歌榜 + 网易云热歌榜，并支持通过独立下载源插件保存高规格音频到本地音乐库。下载源只使用其公开、授权的页面或直链，不绕过 DRM 或第三方访问限制。
+自托管音乐热榜：QQ 音乐热歌榜 + 网易云热歌榜 + 哔哩哔哩音乐热歌榜，并支持通过独立下载源插件保存高规格音频到本地音乐库。下载源只使用其公开、授权的页面或直链，不绕过 DRM 或第三方访问限制。
 
 改 `configs/boards.yaml`（含 `interval_sec`）后必须**重启容器**，调度间隔不会热更新。
 
@@ -22,28 +22,46 @@ docker tag docker.m.daocloud.io/library/python:3.12-alpine python:3.12-alpine
 
 约 30 秒内完成建表；首次拉榜后 `GET /api/v1/health` 的 `data.status` 为 `ready`（各 enabled 榜至少一条成功快照）。打开 http://127.0.0.1:8080 。
 
+## 搜索
+
+首页顶部搜索框支持输入联想，回车后进入独立搜索结果页。搜索会并行查询已注册的
+`SearchPort` 平台（当前包括 QQ 音乐和网易云音乐），将标题、主歌手和时长相符的同一首歌
+合并展示；播放和下载默认选择已有曲库或历史可播率更优的平台候选。
+
+接口：
+
+```text
+GET /api/v1/search?q=周杰伦&type=suggest&limit=5
+GET /api/v1/search?q=周杰伦&type=full&limit=20
+```
+
+搜索结果只在响应层临时聚合，不会写入歌曲历史或创建下载任务；下载和曲库状态仍复用现有
+`/api/v1/downloads` 与 `/api/v1/library` 流程。
+
 本地开发：
 
 ```bash
-cd backend
+cd server
 pip install -e ".[dev]"
 # 需要可用的 PostgreSQL，或先 docker compose up -d postgres
 uvicorn app.main:create_app --factory --reload --port 8080
 
-cd ../frontend
+cd ../web
 npm install
 npm run dev
 ```
 
 ## 下载源插件
 
-下载源位于 `backend/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态、优先级和站点地址写在 `configs/download_sources.yaml`（`config.base_url`），修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。若换镜像站，把 `config.base_url` 改成新域名即可，必要时再加同级 `hosts` 作为额外允许的下载主机。
+下载源位于 `server/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态、优先级和站点地址写在 `configs/download_sources.yaml`（`config.base_url`），修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。若换镜像站，把 `config.base_url` 改成新域名即可，必要时再加同级 `hosts` 作为额外允许的下载主机。
 
 内置下载源包括 `aries` 和 `taurus`。`taurus` 调用 `example.invalid` 的搜索与音频地址解析接口，默认只声明未验证采样率/位深的 FLAC 候选；该站点可能要求正常授权会话，按 `config.cookie_env` 指定的环境变量提供 Cookie（默认 `MUSICO_DL_TAURUS_COOKIE`）。不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge；没有有效会话时，源会将搜索/解析失败交给下载源回退链路处理。
 
 核心负责歌曲匹配、三种允许下载格式（FLAC / WAV / DSF）的质量排序与降级、单任务队列、重试、断点续传、SHA-256 校验和文件入库。多个下载源按照 `configs/download_sources.yaml` 中的 `priority` 从高到低串行检索；候选池再按实际下载质量从高到低排序，同质量时优先使用源 `priority` 高者。未指定 `requested_quality` 时，优先尝试最高质量，下载失败后按候选质量依次降级；指定了格式或采样维度时只匹配该要求，不跨格式降级。下载源只实现 `search` 和 `resolve`，不直接操作文件。
 
 音乐文件默认写入 `data/music/`，容器部署时通过 `MUSIC_LIBRARY_DIR` 修改。PostgreSQL 中的 `musico_library` schema 保存曲目、文件引用和下载任务，不保存音频二进制。
+
+哔哩哔哩音乐插件使用其公开的全站音乐榜、音乐详情和官方试听接口；榜单类型写在 `configs/boards.yaml` 的 `extra.list_type` 中（`1` 为热歌榜，`3` 为二创榜），插件会自动选择对应类型的最新一期。哔哩哔哩音乐站点当前没有与 QQ / 网易同形态的匿名关键词搜索接口，因此本次只接入榜单和本平台官方试听，不把普通视频搜索结果冒充为音频歌曲。
 
 ## 试听回退
 
@@ -62,13 +80,13 @@ npm run dev
 
 ## 加第三个平台
 
-1. 复制 `backend/app/plugins/qqmusic/`
+1. 复制 `server/app/plugins/qqmusic/`
 2. 改 `plugin.toml`（`id`、`config_schema.required`）
 3. 实现 `charts.py` 的 `create_chart` / `fetch_board`，返回 `RawRankItem`
 4. 在 `configs/boards.yaml` 加一行，`platform` 对应该 `id`
 5. 加一份录制 JSON fixture 单测
 
-想让新平台参与跨平台试听回退，再加一个 `search.py`（导出 `create_search`）并在 `plugin.toml` 的 `capabilities` 里声明 `"search"`；核心会自动把它列为试听来源。不必改下载队列或 FastAPI 路由。
+想让新平台参与跨平台试听回退，再加一个 `search.py`（导出 `create_search`）并在 `plugin.toml` 的 `capabilities` 里声明 `"search"`；核心会自动把它列为试听来源。不必改下载队列或 FastAPI 路由。哔哩哔哩插件暂不声明 `search`，避免把普通视频或翻唱误当成官方音频候选。
 
 ## 安全与暴露边界
 
@@ -88,6 +106,6 @@ npm run dev
 
 - `docker compose up -d` 后 Alembic 自动建表
 - 两榜入库后 `/api/v1/health` 为 `ready`
-- `frontend` 的 `npm run build` 通过
-- `frontend` 的 `npm test` 通过（播放器和试听回退回归测试）
+- `web` 的 `npm run build` 通过
+- `web` 的 `npm test` 通过（播放器和试听回退回归测试）
 - 应用镜像（Python + 静态资源）目标 < 200MB
