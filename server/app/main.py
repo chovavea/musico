@@ -29,7 +29,7 @@ from app.services.collect import CollectService
 from app.services.downloads import DownloadService
 from app.services.preview_telemetry import prewarm as prewarm_preview_stats
 from app.services.search import SearchService
-from app.settings import Settings, get_settings
+from app.settings import Settings, export_env_file, get_settings
 
 log = structlog.get_logger(__name__)
 
@@ -108,6 +108,7 @@ def create_app(
     run_migrations: bool = True,
 ) -> FastAPI:
     settings = settings or get_settings()
+    export_env_file()
     configure_logging(settings.log_level)
 
     boards_path = _resolve_boards_path(settings)
@@ -143,6 +144,13 @@ def create_app(
         headers={"User-Agent": user_agent},
         follow_redirects=False,
         limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+    )
+    cover_client = httpx.AsyncClient(
+        timeout=timeout,
+        headers={"User-Agent": user_agent},
+        follow_redirects=False,
+        trust_env=False,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     )
     registry = load_registry(client)
     download_sources = load_download_sources(
@@ -187,6 +195,7 @@ def create_app(
         await client.aclose()
         await preview_client.aclose()
         await download_client.aclose()
+        await cover_client.aclose()
         await engine.dispose()
 
     app = FastAPI(title="musico", lifespan=lifespan)
@@ -205,6 +214,7 @@ def create_app(
     app.state.collect = collect
     app.state.http_client = client
     app.state.preview_client = preview_client
+    app.state.cover_client = cover_client
 
     dist = Path(__file__).resolve().parents[2] / "web" / "dist"
     if dist.is_dir():

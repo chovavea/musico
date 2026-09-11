@@ -53,9 +53,9 @@ npm run dev
 
 ## 下载源插件
 
-下载源位于 `server/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态、优先级和站点地址写在 `configs/download_sources.yaml`（`config.base_url`），修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。若换镜像站，把 `config.base_url` 改成新域名即可，必要时再加同级 `hosts` 作为额外允许的下载主机。
+下载源位于 `server/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态与优先级写在 `configs/download_sources.yaml`，修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。**下载源站点地址不进仓库**：环境变量名集中声明在 `configs/download_sources.yaml` 一处的 `config.base_url_env` / `config.cookie_env` / `config.hosts_env`（只写变量名，不写地址），真实地址、Cookie 和额外放行的落地域名填在本地 `.env`（或容器环境）里。插件侧只用 `requires_base_url` 声明自己需不需要地址，不再出现任何变量名。某个源取不到地址时会跳过该源并记 `download_source_missing_base_url` 日志，其余源不受影响；`hosts_env` 是逗号分隔的额外允许主机。
 
-内置下载源包括 `aries` 和 `taurus`。`taurus` 调用 `example.invalid` 的搜索与音频地址解析接口，默认只声明未验证采样率/位深的 FLAC 候选；该站点可能要求正常授权会话，按 `config.cookie_env` 指定的环境变量提供 Cookie（默认 `MUSICO_DL_TAURUS_COOKIE`）。不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge；没有有效会话时，源会将搜索/解析失败交给下载源回退链路处理。
+内置下载源包括 `aries` 和 `taurus`。`taurus` 调用其站点的搜索与音频地址解析接口，默认只声明未验证采样率/位深的 FLAC 候选；该站点可能要求正常授权会话，按 `config.cookie_env` 指定的环境变量提供 Cookie（变量名见 `configs/download_sources.yaml`）。不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge；没有有效会话时，源会将搜索/解析失败交给下载源回退链路处理。
 
 核心负责歌曲匹配、三种允许下载格式（FLAC / WAV / DSF）的质量排序与降级、单任务队列、重试、断点续传、SHA-256 校验和文件入库。多个下载源按照 `configs/download_sources.yaml` 中的 `priority` 从高到低串行检索；候选池再按实际下载质量从高到低排序，同质量时优先使用源 `priority` 高者。未指定 `requested_quality` 时，优先尝试最高质量，下载失败后按候选质量依次降级；指定了格式或采样维度时只匹配该要求，不跨格式降级。下载源只实现 `search` 和 `resolve`，不直接操作文件。
 
@@ -75,7 +75,7 @@ npm run dev
 - 下载源档**同样是逐个站点串行，不并发**：把全部**已启用**的下载源按优先级排序，先用优先级最高的源搜索（按歌名、歌手及可用的时长等信息匹配歌曲），命中的候选再按「浏览器支持且较轻量的格式 → 采样率 → 位深」逐个尝试，跳过 DSD 等不能直接试听的格式；只有这个源一个都放不出音，才去问下一个源。某个站点搜索、解析或打开音源失败不会阻断其他站点。
 - 回退音频直接流式播放，支持暂停和拖动进度，**不会创建下载任务或自动加入曲库**。所有候选均不可用时显示无可用音源提示。
 - 试听失败时保持当前曲目选中并显示提示，不会静默跳到下一首；需要继续时用播放器的“下一首”或重新点击其他曲目。
-- 下载源站点限制匿名访问时（例如 aries 每日免费额度用尽后返回“今日访问已达限额”），该站点按无候选处理并记录 `download_source_access_limited` 日志，其余下载源仍会继续尝试。
+- 下载源站点限制匿名访问时（例如某个源每日免费额度用尽后返回“今日访问已达限额”），该站点按无候选处理并记录 `download_source_access_limited` 日志，其余下载源仍会继续尝试。
 - 新增并启用下载源插件后会自动参与试听回退；平台插件只要在 `plugin.toml` 声明 `search` 和 `preview` 能力就会自动成为跨平台试听来源，核心不写平台分支。
 
 ## 加第三个平台

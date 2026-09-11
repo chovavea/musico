@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -89,18 +90,66 @@ def load_download_sources(
                 module = importlib.util.module_from_spec(module_spec)
                 module_spec.loader.exec_module(module)
             factory = getattr(module, factory_name)
-            source_config = dict(settings.get("config") or {})
+            config_schema = dict(data.get("config_schema") or {})
+            source_config = {**config_schema, **(settings.get("config") or {})}
+            if not _apply_env_overrides(
+                source_id,
+                settings,
+                source_config,
+                requires_base_url=bool(data.get("requires_base_url", False)),
+            ):
+                continue
             record = DownloadSourceRecord(
                 source_id=source_id,
-                name=str(data.get("name", source_id)),
+                name=str(settings.get("name") or data.get("name") or source_id),
                 priority=int(settings.get("priority", data.get("priority", 0))),
                 hosts=_merged_hosts(data.get("hosts", []), settings, source_config),
-                config_schema=dict(data.get("config_schema") or {}),
+                config_schema=config_schema,
                 source=factory(client, source_config),
             )
             registry.sources[source_id] = record
             log.info("download_source_loaded", source_id=source_id)
     return registry
+
+
+def _apply_env_overrides(
+    source_id: str,
+    settings: dict[str, Any],
+    source_config: dict[str, Any],
+    *,
+    requires_base_url: bool = False,
+) -> bool:
+    """Resolve the indirect ``*_env`` references from the YAML config.
+
+    Environment variable names are declared in exactly one place
+    (``configs/download_sources.yaml``); plugins only state whether they
+    need an address.  Returns False when a source requires a base URL but
+    none is configured, so that source is skipped instead of failing the
+    whole registry.
+    """
+    variable = str(source_config.pop("base_url_env", "") or "").strip()
+    if variable:
+        resolved = os.environ.get(variable, "").strip()
+        if resolved:
+            source_config.setdefault("base_url", resolved)
+    if requires_base_url and not str(source_config.get("base_url") or "").strip():
+        log.warning(
+            "download_source_missing_base_url",
+            source_id=source_id,
+            env=variable or None,
+        )
+        return False
+    hosts_variable = str(source_config.pop("hosts_env", "") or "").strip()
+    if hosts_variable:
+        extra = [
+            item.strip().lower()
+            for item in os.environ.get(hosts_variable, "").split(",")
+            if item.strip()
+        ]
+        if extra:
+            configured = settings.get("hosts")
+            settings["hosts"] = list(configured if isinstance(configured, list) else []) + extra
+    return True
 
 
 def _merged_hosts(

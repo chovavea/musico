@@ -10,11 +10,11 @@ from app.adapters.http.safety import (
 
 @pytest.mark.asyncio
 async def test_host_matches_is_suffix_based() -> None:
-    allowed = ("example.invalid", "music.126.net")
-    assert host_matches("example.invalid", allowed)
-    assert host_matches("www.example.invalid", allowed)
+    allowed = ("media.example", "music.126.net")
+    assert host_matches("media.example", allowed)
+    assert host_matches("www.media.example", allowed)
     assert host_matches("m801.music.126.net", allowed)
-    assert not host_matches("example.invalid.evil.com", allowed)
+    assert not host_matches("media.example.evil.com", allowed)
     assert not host_matches("qq.com", allowed)
     assert not host_matches("", allowed)
 
@@ -22,15 +22,15 @@ async def test_host_matches_is_suffix_based() -> None:
 @pytest.mark.asyncio
 async def test_rejects_non_http_scheme_and_missing_host() -> None:
     with pytest.raises(OutboundUrlError, match="http or https"):
-        await assert_outbound_url_allowed("file:///etc/passwd", ("example.invalid",))
+        await assert_outbound_url_allowed("file:///etc/passwd", ("media.example",))
     with pytest.raises(OutboundUrlError, match="no host"):
-        await assert_outbound_url_allowed("https://", ("example.invalid",))
+        await assert_outbound_url_allowed("https://", ("media.example",))
 
 
 @pytest.mark.asyncio
 async def test_rejects_host_outside_allowlist() -> None:
     with pytest.raises(OutboundUrlError, match="not allowed"):
-        await assert_outbound_url_allowed("https://evil.example.com/x.flac", ("example.invalid",))
+        await assert_outbound_url_allowed("https://evil.example.com/x.flac", ("media.example",))
 
 
 @pytest.mark.asyncio
@@ -62,12 +62,12 @@ async def test_rejects_hostname_resolving_to_private_ip() -> None:
 @pytest.mark.asyncio
 async def test_accepts_hostname_resolving_to_public_ip() -> None:
     async def resolver(hostname: str) -> list[str]:
-        assert hostname == "cdn.example.invalid"
+        assert hostname == "cdn.media.example"
         return ["93.184.216.34"]
 
     await assert_outbound_url_allowed(
-        "https://cdn.example.invalid/x.flac",
-        ("example.invalid",),
+        "https://cdn.media.example/x.flac",
+        ("media.example",),
         resolver=resolver,
     )
 
@@ -80,6 +80,6 @@ async def test_allowlist_applies_before_resolution() -> None:
     with pytest.raises(OutboundUrlError, match="not allowed"):
         await assert_outbound_url_allowed(
             "https://evil.example.com/x.flac",
-            ("example.invalid",),
+            ("media.example",),
             resolver=resolver,
         )

@@ -27,7 +27,7 @@ class _Source:
         return self.candidates
 
     async def resolve(self, _candidate: DownloadCandidate, *, offset: int = 0) -> DownloadResponse:
-        return DownloadResponse(url="https://example.invalid/audio.wav", headers={})
+        return DownloadResponse(url="https://media.example/audio.wav", headers={})
 
 
 class _RecordingSource(_Source):
@@ -165,7 +165,7 @@ async def test_candidate_pool_keeps_allowed_qualities_for_downgrade() -> None:
                 source_id="aries",
                 name="aries",
                 priority=100,
-                hosts=("example.invalid",),
+                hosts=("media.example",),
                 config_schema={},
                 source=source,
             )
@@ -209,7 +209,7 @@ async def test_candidate_pool_does_not_downgrade_requested_quality() -> None:
                 source_id="aries",
                 name="aries",
                 priority=100,
-                hosts=("example.invalid",),
+                hosts=("media.example",),
                 config_schema={},
                 source=source,
             )
@@ -272,7 +272,7 @@ async def test_download_writes_and_verifies_audio(tmp_path: Path) -> None:
                 source_id="aries",
                 name="aries",
                 priority=100,
-                hosts=("example.invalid",),
+                hosts=("media.example",),
                 config_schema={},
                 source=source,
             )
@@ -324,7 +324,7 @@ async def test_download_rejects_audio_that_does_not_match_advertised_quality(
                 source_id="aries",
                 name="aries",
                 priority=100,
-                hosts=("example.invalid",),
+                hosts=("media.example",),
                 config_schema={},
                 source=source,
             )
@@ -366,7 +366,9 @@ async def test_download_rejects_audio_container_that_does_not_match_format(
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=payload, headers={"content-type": "audio/wav"})
 
-    registry = _registry(_RedirectSource("https://example.invalid/audio.flac"), hosts=("example.invalid",))
+    registry = _registry(
+        _RedirectSource("https://media.example/audio.flac"), hosts=("media.example",)
+    )
     settings = Settings(boards_yaml=Path("configs/boards.yaml"), music_library_dir=tmp_path)
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     worker = DownloadWorker(
@@ -390,7 +392,9 @@ async def test_download_rejects_audio_container_that_does_not_match_format(
 
 @pytest.mark.asyncio
 async def test_download_rejects_mp3_before_resolving_source(tmp_path: Path) -> None:
-    registry = _registry(_RedirectSource("https://example.invalid/audio.mp3"), hosts=("example.invalid",))
+    registry = _registry(
+        _RedirectSource("https://media.example/audio.mp3"), hosts=("media.example",)
+    )
     settings = Settings(boards_yaml=Path("configs/boards.yaml"), music_library_dir=tmp_path)
     client = httpx.AsyncClient()
     worker = DownloadWorker(
@@ -437,11 +441,13 @@ async def test_download_follows_safe_redirect(tmp_path: Path) -> None:
         if request.url.path == "/start.wav":
             return httpx.Response(
                 302,
-                headers={"location": "https://example.invalid/final.wav"},
+                headers={"location": "https://media.example/final.wav"},
             )
         return httpx.Response(200, content=payload, headers={"content-type": "audio/wav"})
 
-    registry = _registry(_RedirectSource("https://example.invalid/start.wav"), hosts=("example.invalid",))
+    registry = _registry(
+        _RedirectSource("https://media.example/start.wav"), hosts=("media.example",)
+    )
     settings = Settings(boards_yaml=Path("configs/boards.yaml"), music_library_dir=tmp_path)
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     worker = DownloadWorker(
@@ -449,10 +455,10 @@ async def test_download_follows_safe_redirect(tmp_path: Path) -> None:
     )
     repo = _Repo()
     task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
-    candidate = _candidate(url="https://example.invalid/start.wav")
+    candidate = _candidate(url="https://media.example/start.wav")
     relative, size, digest = await worker._download(task, candidate, repo)
     await client.aclose()
-    assert calls == ["https://example.invalid/start.wav", "https://example.invalid/final.wav"]
+    assert calls == ["https://media.example/start.wav", "https://media.example/final.wav"]
     path = tmp_path / relative
     assert path.is_file()
     assert size == len(payload)
@@ -484,9 +490,11 @@ async def test_download_rejects_redirect_to_private_host(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_download_stops_after_redirect_limit(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(302, headers={"location": "https://example.invalid/loop.wav"})
+        return httpx.Response(302, headers={"location": "https://media.example/loop.wav"})
 
-    registry = _registry(_RedirectSource("https://example.invalid/start.wav"), hosts=("example.invalid",))
+    registry = _registry(
+        _RedirectSource("https://media.example/start.wav"), hosts=("media.example",)
+    )
     settings = Settings(boards_yaml=Path("configs/boards.yaml"), music_library_dir=tmp_path)
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     worker = DownloadWorker(
@@ -494,7 +502,7 @@ async def test_download_stops_after_redirect_limit(tmp_path: Path) -> None:
     )
     repo = _Repo()
     task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
-    candidate = _candidate(url="https://example.invalid/loop.wav")
+    candidate = _candidate(url="https://media.example/loop.wav")
     with pytest.raises(ValueError, match="redirect limit"):
         await worker._download(task, candidate, repo)
     await client.aclose()
