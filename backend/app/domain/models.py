@@ -5,6 +5,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# Download output is intentionally limited to these three lossless formats.
+# Official platform previews have a separate format policy and are not
+# represented by this set.
+DownloadFormat = Literal["flac", "wav", "dsf"]
+ALLOWED_DOWNLOAD_FORMATS: tuple[DownloadFormat, ...] = ("flac", "wav", "dsf")
+_ALLOWED_DOWNLOAD_FORMAT_SET = frozenset(ALLOWED_DOWNLOAD_FORMATS)
+
+
+def normalize_audio_format(value: str) -> str:
+    return value.lower().lstrip(".")
+
+
+def is_allowed_download_format(value: str) -> bool:
+    return normalize_audio_format(value) in _ALLOWED_DOWNLOAD_FORMAT_SET
+
 
 class BoardSpec(BaseModel):
     id: str
@@ -77,12 +92,8 @@ class AudioQuality(BaseModel):
     def sort_key(self) -> tuple[int, int, int, int, int]:
         format_rank = {
             "dsf": 4,
-            "dff": 4,
-            "dsd": 4,
             "wav": 3,
             "flac": 3,
-            "alac": 3,
-            "aiff": 3,
         }.get(self.format.lower().lstrip("."), 0)
         return (
             format_rank,

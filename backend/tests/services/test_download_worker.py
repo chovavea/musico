@@ -30,6 +30,17 @@ class _Source:
         return DownloadResponse(url="https://example.invalid/audio.wav", headers={})
 
 
+class _RecordingSource(_Source):
+    def __init__(self, label: str, calls: list[str]) -> None:
+        super().__init__([])
+        self.label = label
+        self.calls = calls
+
+    async def search(self, _track: TrackRef) -> list[DownloadCandidate]:
+        self.calls.append(self.label)
+        return []
+
+
 class _Repo:
     def __init__(self) -> None:
         self.saved: list[DownloadCandidate] = []
@@ -61,7 +72,47 @@ class _Session:
 
 
 @pytest.mark.asyncio
-async def test_candidate_pool_keeps_only_highest_quality() -> None:
+async def test_candidate_search_uses_configured_source_priority_order() -> None:
+    calls: list[str] = []
+    high_quality_source = _RecordingSource("high", calls)
+    lower_quality_source = _RecordingSource("low", calls)
+    registry = DownloadSourceRegistry(
+        sources={
+            "low": DownloadSourceRecord(
+                source_id="low",
+                name="low",
+                priority=90,
+                hosts=("low.example",),
+                config_schema={},
+                source=lower_quality_source,
+            ),
+            "high": DownloadSourceRecord(
+                source_id="high",
+                name="high",
+                priority=100,
+                hosts=("high.example",),
+                config_schema={},
+                source=high_quality_source,
+            ),
+        }
+    )
+    settings = Settings(boards_yaml=Path("configs/boards.yaml"))
+    worker = DownloadWorker(
+        SimpleNamespace(), httpx.AsyncClient(), registry, settings, url_guard=_allow_all_urls
+    )
+    selected = await worker._candidate_pool(
+        _Session(),
+        _Repo(),
+        DownloadTaskRow(id="task", library_track_id="track", status="downloading"),
+        TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦"),
+    )
+    await worker._client.aclose()
+    assert selected == []
+    assert calls == ["high", "low"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_pool_keeps_allowed_qualities_for_downgrade() -> None:
     track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
     candidates = [
         DownloadCandidate(
@@ -77,6 +128,34 @@ async def test_candidate_pool_keeps_only_highest_quality() -> None:
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="flac", sample_rate_hz=44_100, bit_depth=16),
+        ),
+        DownloadCandidate(
+            source_id="aries",
+            source_track_id="mp3",
+            title="晴天",
+            artist="周杰伦",
+            quality=AudioQuality(format="mp3"),
+        ),
+        DownloadCandidate(
+            source_id="aries",
+            source_track_id="dff",
+            title="晴天",
+            artist="周杰伦",
+            quality=AudioQuality(format="dff"),
+        ),
+        DownloadCandidate(
+            source_id="aries",
+            source_track_id="dsf",
+            title="晴天",
+            artist="周杰伦",
+            quality=AudioQuality(format="dsf"),
+        ),
+        DownloadCandidate(
+            source_id="aries",
+            source_track_id="wav",
+            title="晴天",
+            artist="周杰伦",
+            quality=AudioQuality(format="wav"),
         ),
     ]
     source = _Source(candidates)
@@ -100,12 +179,12 @@ async def test_candidate_pool_keeps_only_highest_quality() -> None:
     task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
     selected = await worker._candidate_pool(_Session(), repo, task, track)
     await worker._client.aclose()
-    assert [item.source_track_id for item in selected] == ["hires"]
-    assert [item.source_track_id for item in repo.saved] == ["hires"]
+    assert [item.source_track_id for item in selected] == ["dsf", "hires", "cd", "wav"]
+    assert [item.source_track_id for item in repo.saved] == ["dsf", "hires", "cd", "wav"]
 
 
 @pytest.mark.asyncio
-async def test_candidate_pool_filters_requested_quality_before_selecting_highest() -> None:
+async def test_candidate_pool_does_not_downgrade_requested_quality() -> None:
     track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
     candidates = [
         DownloadCandidate(
@@ -307,6 +386,29 @@ async def test_download_rejects_audio_container_that_does_not_match_format(
     await client.aclose()
     assert not (tmp_path / "task.part").exists()
     assert not (tmp_path / "task.flac").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_mp3_before_resolving_source(tmp_path: Path) -> None:
+    registry = _registry(_RedirectSource("https://example.invalid/audio.mp3"), hosts=("example.invalid",))
+    settings = Settings(boards_yaml=Path("configs/boards.yaml"), music_library_dir=tmp_path)
+    client = httpx.AsyncClient()
+    worker = DownloadWorker(
+        SimpleNamespace(), client, registry, settings, url_guard=_allow_all_urls
+    )
+    repo = _Repo()
+    task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
+    candidate = DownloadCandidate(
+        source_id="aries",
+        source_track_id="mp3",
+        title="晴天",
+        artist="周杰伦",
+        quality=AudioQuality(format="mp3"),
+    )
+    with pytest.raises(ValueError, match="download format is not supported"):
+        await worker._download(task, candidate, repo)
+    await client.aclose()
+    assert not (tmp_path / "task.part").exists()
 
 
 async def _reject_everything(_url: str, _hosts: object) -> None:

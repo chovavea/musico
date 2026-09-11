@@ -29,7 +29,14 @@ from app.adapters.persistence.models import (
     LibraryTrackRow,
 )
 from app.domain.matching import is_auto_match
-from app.domain.models import AudioQuality, DownloadCandidate, TrackRef
+from app.domain.models import (
+    ALLOWED_DOWNLOAD_FORMATS,
+    AudioQuality,
+    DownloadCandidate,
+    TrackRef,
+    is_allowed_download_format,
+    normalize_audio_format,
+)
 from app.download_sources.registry import DownloadSourceRegistry
 from app.settings import Settings
 
@@ -224,9 +231,18 @@ class DownloadWorker:
             if task.requested_quality
             else None
         )
+        if requested_quality is not None and not is_allowed_download_format(
+            requested_quality.format
+        ):
+            return []
         if task.candidate_snapshot:
             snapshot_candidates = [
                 DownloadCandidate.model_validate(item) for item in task.candidate_snapshot
+            ]
+            snapshot_candidates = [
+                candidate
+                for candidate in snapshot_candidates
+                if is_allowed_download_format(candidate.quality.format)
             ]
             if requested_quality is not None:
                 snapshot_candidates = [
@@ -235,18 +251,20 @@ class DownloadWorker:
                     if candidate.quality.may_match_requested(requested_quality)
                 ]
             return snapshot_candidates
-        results = await asyncio.gather(
-            *(record.source.search(track) for record in self._sources.enabled()),
-            return_exceptions=True,
-        )
         candidates: list[DownloadCandidate] = []
-        for result in results:
-            if isinstance(result, Exception):
+        # Search sources in their configured quality priority order.  Searching
+        # concurrently would make a lower-quality source race a higher-quality
+        # one and would also make upstream load unpredictable.
+        for record in self._sources.enabled():
+            try:
+                result = await record.source.search(track)
+            except Exception:
                 continue
             candidates.extend(
                 candidate
                 for candidate in result
-                if candidate.source_id in self._sources.sources
+                if is_allowed_download_format(candidate.quality.format)
+                and candidate.source_id in self._sources.sources
                 and is_auto_match(
                     track,
                     TrackRef(
@@ -276,8 +294,6 @@ class DownloadWorker:
             ),
             reverse=True,
         )
-        top_quality = candidates[0].quality.sort_key()
-        candidates = [item for item in candidates if item.quality.sort_key() == top_quality]
         if not await repo.save_candidate_snapshot(task, candidates, candidates[0]):
             return candidates
         await session.commit()
@@ -294,7 +310,9 @@ class DownloadWorker:
             raise ValueError("download source missing")
         directory = self._settings.music_library_dir
         directory.mkdir(parents=True, exist_ok=True)
-        extension = candidate.quality.format.lower().lstrip(".") or "bin"
+        extension = normalize_audio_format(candidate.quality.format)
+        if extension not in ALLOWED_DOWNLOAD_FORMATS:
+            raise ValueError("download format is not supported")
         part_path = directory / f"{task.id}.part"
         final_path = directory / f"{task.id}.{extension}"
         offset = part_path.stat().st_size if part_path.exists() else 0
@@ -380,7 +398,7 @@ class DownloadWorker:
             raise ValueError("download exceeded redirect limit")
         try:
             verified_quality = await asyncio.to_thread(
-                _verify_audio, part_path, candidate.quality.format
+                _verify_audio, part_path, extension
             )
             advertised_dimensions = (
                 candidate.quality.sample_rate_hz is not None
@@ -530,30 +548,16 @@ def _audio_format(audio: Any) -> str:
     module_formats = {
         "mutagen.flac": "flac",
         "mutagen.wave": "wav",
-        "mutagen.aiff": "aiff",
         "mutagen.dsf": "dsf",
-        "mutagen.mp3": "mp3",
-        "mutagen.asf": "wma",
-        "mutagen.oggvorbis": "ogg",
-        "mutagen.oggopus": "opus",
     }
-    if module in module_formats:
+    if module in module_formats and is_allowed_download_format(module_formats[module]):
         return module_formats[module]
-    if module == "mutagen.mp4":
-        codec = str(getattr(getattr(audio, "info", None), "codec", "")).lower()
-        return "alac" if codec == "alac" else "m4a"
     mime_formats = {
         "audio/flac": "flac",
         "audio/wav": "wav",
         "audio/wave": "wav",
         "audio/x-wav": "wav",
-        "audio/aiff": "aiff",
-        "audio/x-aiff": "aiff",
         "audio/dsf": "dsf",
-        "audio/mpeg": "mp3",
-        "audio/mp3": "mp3",
-        "audio/ogg": "ogg",
-        "audio/opus": "opus",
     }
     for mime in getattr(audio, "mime", ()) or ():
         normalized = str(mime).lower().split(";", 1)[0]

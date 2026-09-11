@@ -6,7 +6,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.adapters.persistence.library_repository import LibraryRepository, task_idempotency_key
-from app.domain.models import AudioQuality, TrackRef
+from app.domain.models import (
+    ALLOWED_DOWNLOAD_FORMATS,
+    AudioQuality,
+    TrackRef,
+    is_allowed_download_format,
+)
 from app.settings import Settings
 
 
@@ -20,6 +25,11 @@ class DownloadService:
     async def request(
         self, track: TrackRef, requested_quality: AudioQuality | None = None
     ) -> dict[str, Any]:
+        if requested_quality is not None and not is_allowed_download_format(
+            requested_quality.format
+        ):
+            allowed = ", ".join(ALLOWED_DOWNLOAD_FORMATS)
+            raise ValueError(f"requested download format must be one of: {allowed}")
         key = task_idempotency_key(track, requested_quality)
         async with self._session_factory() as session:
             repo = LibraryRepository(session)
