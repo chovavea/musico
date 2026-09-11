@@ -1,5 +1,5 @@
-id = "taurus"
-name = "金牛座"
+id = "sonoma"
+name = "Sonoma"
 entrypoint = "source:create_source"
 priority = 90
 requires_base_url = true

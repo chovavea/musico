@@ -55,7 +55,7 @@ npm run dev
 
 下载源位于 `server/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态与优先级写在 `configs/download_sources.yaml`，修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。**下载源站点地址不进仓库**：环境变量名集中声明在 `configs/download_sources.yaml` 一处的 `config.base_url_env` / `config.cookie_env` / `config.hosts_env`（只写变量名，不写地址），真实地址、Cookie 和额外放行的落地域名填在本地 `.env`（或容器环境）里。插件侧只用 `requires_base_url` 声明自己需不需要地址，不再出现任何变量名。某个源取不到地址时会跳过该源并记 `download_source_missing_base_url` 日志，其余源不受影响；`hosts_env` 是逗号分隔的额外允许主机。
 
-内置下载源包括 `aries` 和 `taurus`。`taurus` 调用其站点的搜索与音频地址解析接口，默认只声明未验证采样率/位深的 FLAC 候选；该站点可能要求正常授权会话，按 `config.cookie_env` 指定的环境变量提供 Cookie（变量名见 `configs/download_sources.yaml`）。不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge；没有有效会话时，源会将搜索/解析失败交给下载源回退链路处理。
+内置下载源包括 `ventura` 和 `sonoma`。`sonoma` 调用其站点的搜索与音频地址解析接口，默认只声明未验证采样率/位深的 FLAC 候选；该站点可能要求正常授权会话，按 `config.cookie_env` 指定的环境变量提供 Cookie（变量名见 `configs/download_sources.yaml`）。不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge；没有有效会话时，源会将搜索/解析失败交给下载源回退链路处理。
 
 核心负责歌曲匹配、三种允许下载格式（FLAC / WAV / DSF）的质量排序与降级、单任务队列、重试、断点续传、SHA-256 校验和文件入库。多个下载源按照 `configs/download_sources.yaml` 中的 `priority` 从高到低串行检索；候选池再按实际下载质量从高到低排序，同质量时优先使用源 `priority` 高者。未指定 `requested_quality` 时，优先尝试最高质量，下载失败后按候选质量依次降级；指定了格式或采样维度时只匹配该要求，不跨格式降级。下载源只实现 `search` 和 `resolve`，不直接操作文件。
 

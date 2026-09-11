@@ -22,7 +22,7 @@ log = structlog.get_logger(__name__)
 
 UrlGuard = Callable[[str, Sequence[str]], Awaitable[None]]
 
-_SOURCE_ID = "taurus"
+_SOURCE_ID = "sonoma"
 _SEARCH_PATH = "/ajax.php?act=search"
 _RESOLVE_PATH = "/ajax.php?act=getUrl"
 _DEFAULT_MAX_RESULTS = 8
@@ -35,7 +35,7 @@ class SourceSessionError(ValueError):
     """Raised when the upstream anti-bot/session gate rejects a request."""
 
 
-class TaurusSource:
+class SonomaSource:
     """Adapter for the public search and URL-resolve endpoints of the site.
 
     The site may require a short-lived browser session.  A session can be
@@ -131,16 +131,16 @@ class TaurusSource:
         offset: int = 0,
     ) -> DownloadResponse:
         if candidate.source_id != _SOURCE_ID:
-            raise ValueError("taurus candidate belongs to another source")
+            raise ValueError("sonoma candidate belongs to another source")
 
         locator = candidate.locator
         song_id = str(locator.get("songid") or candidate.source_track_id).strip()
         if not song_id:
-            raise ValueError("taurus candidate has no song id")
+            raise ValueError("sonoma candidate has no song id")
 
         format_name = normalize_audio_format(str(locator.get("format") or "flac"))
         if format_name != "flac":
-            raise ValueError("taurus only supports FLAC downloads")
+            raise ValueError("sonoma only supports FLAC downloads")
         payload = {
             "songid": song_id,
             "format": format_name,
@@ -152,14 +152,14 @@ class TaurusSource:
             response = await self._post_form(_RESOLVE_PATH, payload)
         except (SourceSessionError, httpx.HTTPError, ValueError) as exc:
             _log_upstream_failure("resolve", exc)
-            raise ValueError("taurus resolve request failed") from exc
+            raise ValueError("sonoma resolve request failed") from exc
 
         download_url = _download_url(response)
         if not download_url:
-            raise ValueError("taurus response has no download URL")
+            raise ValueError("sonoma response has no download URL")
         parsed = urlparse(download_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("taurus returned an invalid download URL")
+            raise ValueError("sonoma returned an invalid download URL")
 
         headers = {"Referer": self._referer}
         if offset > 0:
@@ -191,13 +191,13 @@ class TaurusSource:
             follow_redirects=False,
         )
         if response.status_code == 468:
-            raise SourceSessionError("taurus session rejected")
+            raise SourceSessionError("sonoma session rejected")
         if response.status_code in REDIRECT_STATUSES:
-            raise ValueError("taurus API redirected unexpectedly")
+            raise ValueError("sonoma API redirected unexpectedly")
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
-            raise ValueError("taurus API returned a non-object response")
+            raise ValueError("sonoma API returned a non-object response")
         return data
 
 
@@ -313,10 +313,10 @@ def _parse_duration(value: object) -> int | None:
 def _normalize_base_url(value: object) -> str:
     raw = str(value).strip() if value is not None else ""
     if not raw:
-        raise ValueError("taurus base_url is required")
+        raise ValueError("sonoma base_url is required")
     parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("taurus base_url must be an http(s) URL with a host")
+        raise ValueError("sonoma base_url must be an http(s) URL with a host")
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
@@ -325,7 +325,7 @@ def _normalize_cookie_env(value: object) -> str:
     if not name:
         return ""
     if not all(char.isalnum() or char == "_" for char in name):
-        raise ValueError("taurus cookie_env must be an environment variable name")
+        raise ValueError("sonoma cookie_env must be an environment variable name")
     return name
 
 
@@ -360,5 +360,5 @@ def _log_upstream_failure(operation: str, error: Exception) -> None:
 def create_source(
     client: httpx.AsyncClient,
     config: dict[str, object] | None = None,
-) -> TaurusSource:
-    return TaurusSource(client, config)
+) -> SonomaSource:
+    return SonomaSource(client, config)

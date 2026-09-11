@@ -81,7 +81,7 @@ class _PageData(NamedTuple):
     size_bytes: int | None
 
 
-class AriesSource:
+class VenturaSource:
     def __init__(
         self,
         client: httpx.AsyncClient,
@@ -127,7 +127,7 @@ class AriesSource:
                 is_auto_match(
                     track,
                     TrackRef(
-                        platform="aries",
+                        platform="ventura",
                         external_id=str(item.get("id")),
                         title=str(item.get("name") or ""),
                         artist=str(item.get("player") or ""),
@@ -142,7 +142,7 @@ class AriesSource:
             if is_auto_match(
                 track,
                 TrackRef(
-                    platform="aries",
+                    platform="ventura",
                     external_id=str(item.get("id")),
                     title=str(item.get("name") or ""),
                     artist=str(item.get("player") or ""),
@@ -212,7 +212,7 @@ class AriesSource:
             update={"format": format_name}
         )
         return DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id=detail_url,
             title=title,
             artist=artist,
@@ -238,7 +238,7 @@ class AriesSource:
         locator = candidate.locator
         detail_url = locator.get("detail_url")
         if not isinstance(detail_url, str) or not detail_url:
-            raise ValueError("aries candidate has no resolvable URL")
+            raise ValueError("ventura candidate has no resolvable URL")
         response = await self._get(
             detail_url,
             headers={"Referer": self._referer},
@@ -247,7 +247,7 @@ class AriesSource:
         download_url = _find_download_url(response.text, detail_url)
         if not download_url:
             _log_access_limited(response.text, detail_url)
-            raise ValueError("aries page has no direct download link")
+            raise ValueError("ventura page has no direct download link")
         headers = {"Referer": self._referer}
         if offset > 0:
             headers["Range"] = f"bytes={offset}-"
@@ -280,9 +280,9 @@ class AriesSource:
                 return response
             location = response.headers.get("location")
             if not location:
-                raise ValueError("aries redirect missing location")
+                raise ValueError("ventura redirect missing location")
             current_url = urljoin(str(response.url), location)
-        raise ValueError("aries page exceeded redirect limit")
+        raise ValueError("ventura page exceeded redirect limit")
 
 
 def _normalize_base_url(value: object) -> str:
@@ -309,7 +309,7 @@ def _hosts_for_base_url(base_url: str) -> tuple[str, ...]:
 
 def _log_access_limited(html: str, url: str) -> None:
     if any(marker in html for marker in _ACCESS_LIMITED_MARKERS):
-        log.warning("download_source_access_limited", source_id="aries", url=url)
+        log.warning("download_source_access_limited", source_id="ventura", url=url)
 
 
 def _find_download_url(html: str, base_url: str) -> str | None:
@@ -437,5 +437,5 @@ def _quality_from_text(text: str) -> AudioQuality:
 
 def create_source(
     client: httpx.AsyncClient, config: dict[str, object] | None = None
-) -> AriesSource:
-    return AriesSource(client, config)
+) -> VenturaSource:
+    return VenturaSource(client, config)

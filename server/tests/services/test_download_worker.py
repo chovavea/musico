@@ -116,42 +116,42 @@ async def test_candidate_pool_keeps_allowed_qualities_for_downgrade() -> None:
     track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
     candidates = [
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="hires",
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="flac", sample_rate_hz=96_000, bit_depth=24),
         ),
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="cd",
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="flac", sample_rate_hz=44_100, bit_depth=16),
         ),
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="mp3",
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="mp3"),
         ),
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="dff",
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="dff"),
         ),
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="dsf",
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="dsf"),
         ),
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="wav",
             title="晴天",
             artist="周杰伦",
@@ -161,9 +161,9 @@ async def test_candidate_pool_keeps_allowed_qualities_for_downgrade() -> None:
     source = _Source(candidates)
     registry = DownloadSourceRegistry(
         sources={
-            "aries": DownloadSourceRecord(
-                source_id="aries",
-                name="aries",
+            "ventura": DownloadSourceRecord(
+                source_id="ventura",
+                name="ventura",
                 priority=100,
                 hosts=("media.example",),
                 config_schema={},
@@ -188,14 +188,14 @@ async def test_candidate_pool_does_not_downgrade_requested_quality() -> None:
     track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
     candidates = [
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="hires",
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="flac", sample_rate_hz=96_000, bit_depth=24),
         ),
         DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="cd",
             title="晴天",
             artist="周杰伦",
@@ -205,9 +205,9 @@ async def test_candidate_pool_does_not_downgrade_requested_quality() -> None:
     source = _Source(candidates)
     registry = DownloadSourceRegistry(
         sources={
-            "aries": DownloadSourceRecord(
-                source_id="aries",
-                name="aries",
+            "ventura": DownloadSourceRecord(
+                source_id="ventura",
+                name="ventura",
                 priority=100,
                 hosts=("media.example",),
                 config_schema={},
@@ -268,9 +268,9 @@ async def test_download_writes_and_verifies_audio(tmp_path: Path) -> None:
     source = _Source([])
     registry = DownloadSourceRegistry(
         sources={
-            "aries": DownloadSourceRecord(
-                source_id="aries",
-                name="aries",
+            "ventura": DownloadSourceRecord(
+                source_id="ventura",
+                name="ventura",
                 priority=100,
                 hosts=("media.example",),
                 config_schema={},
@@ -286,7 +286,7 @@ async def test_download_writes_and_verifies_audio(tmp_path: Path) -> None:
     repo = _Repo()
     task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
     candidate = DownloadCandidate(
-        source_id="aries",
+        source_id="ventura",
         source_track_id="wav",
         title="晴天",
         artist="周杰伦",
@@ -320,9 +320,9 @@ async def test_download_rejects_audio_that_does_not_match_advertised_quality(
     source = _Source([])
     registry = DownloadSourceRegistry(
         sources={
-            "aries": DownloadSourceRecord(
-                source_id="aries",
-                name="aries",
+            "ventura": DownloadSourceRecord(
+                source_id="ventura",
+                name="ventura",
                 priority=100,
                 hosts=("media.example",),
                 config_schema={},
@@ -338,7 +338,7 @@ async def test_download_rejects_audio_that_does_not_match_advertised_quality(
     repo = _Repo()
     task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
     candidate = DownloadCandidate(
-        source_id="aries",
+        source_id="ventura",
         source_track_id="wav",
         title="晴天",
         artist="周杰伦",
@@ -377,7 +377,7 @@ async def test_download_rejects_audio_container_that_does_not_match_format(
     repo = _Repo()
     task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
     candidate = DownloadCandidate(
-        source_id="aries",
+        source_id="ventura",
         source_track_id="flac",
         title="晴天",
         artist="周杰伦",
@@ -403,7 +403,7 @@ async def test_download_rejects_mp3_before_resolving_source(tmp_path: Path) -> N
     repo = _Repo()
     task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
     candidate = DownloadCandidate(
-        source_id="aries",
+        source_id="ventura",
         source_track_id="mp3",
         title="晴天",
         artist="周杰伦",
@@ -511,9 +511,9 @@ async def test_download_stops_after_redirect_limit(tmp_path: Path) -> None:
 def _registry(source: _Source, hosts: tuple[str, ...]) -> DownloadSourceRegistry:
     return DownloadSourceRegistry(
         sources={
-            "aries": DownloadSourceRecord(
-                source_id="aries",
-                name="aries",
+            "ventura": DownloadSourceRecord(
+                source_id="ventura",
+                name="ventura",
                 priority=100,
                 hosts=hosts,
                 config_schema={},
@@ -525,7 +525,7 @@ def _registry(source: _Source, hosts: tuple[str, ...]) -> DownloadSourceRegistry
 
 def _candidate(url: str) -> DownloadCandidate:
     return DownloadCandidate(
-        source_id="aries",
+        source_id="ventura",
         source_track_id="wav",
         title="晴天",
         artist="周杰伦",
