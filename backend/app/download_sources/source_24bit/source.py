@@ -13,7 +13,14 @@ import structlog
 
 from app.adapters.http.safety import MAX_HOPS, REDIRECT_STATUSES, assert_outbound_url_allowed
 from app.domain.matching import is_auto_match
-from app.domain.models import AudioQuality, DownloadCandidate, DownloadResponse, TrackRef
+from app.domain.models import (
+    AudioQuality,
+    DownloadCandidate,
+    DownloadResponse,
+    TrackRef,
+    is_allowed_download_format,
+    normalize_audio_format,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -31,7 +38,7 @@ _QUALITY_ROUTES = (
 _MAX_DETAIL_RESULTS = 2
 _DETAIL_CONCURRENCY = 3
 _AUDIO_URL_RE = re.compile(
-    r"https?://[^\"'<>\\\s]+\.(?:flac|wav|dsf|dff)(?:\?[^\"'<>\\\s]*)?",
+    r"https?://[^\"'<>\\\s]+\.(?:flac|wav|dsf)(?:\?[^\"'<>\\\s]*)?",
     re.IGNORECASE,
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -199,8 +206,11 @@ class AriesSource:
                 if value
             )
         )
+        format_name = normalize_audio_format(page_data.format or "flac")
+        if not is_allowed_download_format(format_name):
+            return None
         quality = quality.model_copy(
-            update={"format": page_data.format.lower().lstrip(".") or "flac"}
+            update={"format": format_name}
         )
         return DownloadCandidate(
             source_id="aries",
@@ -307,7 +317,7 @@ def _find_download_url(html: str, base_url: str) -> str | None:
     parser.feed(normalized)
     for href, _label in parser.links:
         absolute = urljoin(base_url, href.rstrip("\\"))
-        if re.search(r"\.(?:flac|wav|dsf|dff)(?:\?|$)", absolute, re.I):
+        if re.search(r"\.(?:flac|wav|dsf)(?:\?|$)", absolute, re.I):
             return absolute
         if "/download" in urlparse(absolute).path.lower() and absolute != base_url:
             return absolute
@@ -401,8 +411,6 @@ def _quality_from_text(text: str) -> AudioQuality:
     lowered = text.lower()
     if ".dsf" in lowered:
         fmt = "dsf"
-    elif ".dff" in lowered:
-        fmt = "dff"
     elif ".wav" in lowered:
         fmt = "wav"
     else:

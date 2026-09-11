@@ -5,3 +5,10 @@ sources:
     config:
       base_url: https://www.example.invalid
       max_results: 8
+  - id: taurus
+    enabled: true
+    priority: 90
+    config:
+      base_url: https://example.invalid
+      max_results: 8
+      cookie_env: MUSICO_DL_TAURUS_COOKIE

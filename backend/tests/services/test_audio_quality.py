@@ -1,4 +1,17 @@
-from app.domain.models import AudioQuality
+from app.domain.models import (
+    ALLOWED_DOWNLOAD_FORMATS,
+    AudioQuality,
+    is_allowed_download_format,
+)
+
+
+def test_download_formats_are_exactly_the_three_lossless_formats() -> None:
+    assert ALLOWED_DOWNLOAD_FORMATS == ("flac", "wav", "dsf")
+    assert is_allowed_download_format("FLAC")
+    assert is_allowed_download_format(".wav")
+    assert is_allowed_download_format("dsf")
+    assert not is_allowed_download_format("mp3")
+    assert not is_allowed_download_format("dff")
 
 
 def test_quality_prefers_hires_flac_over_cd_wav() -> None:

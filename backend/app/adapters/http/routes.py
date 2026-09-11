@@ -6,12 +6,18 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.adapters.http.envelope import fail, ok
 from app.adapters.http.preview import stream_preview
 from app.adapters.persistence.repository import ChartRepository
-from app.domain.models import AudioQuality, BoardSpec, TrackRef
+from app.domain.models import (
+    ALLOWED_DOWNLOAD_FORMATS,
+    AudioQuality,
+    BoardSpec,
+    TrackRef,
+    is_allowed_download_format,
+)
 from app.services.catalog import (
     apply_catalog_order,
     catalog_chart_keys,
@@ -42,6 +48,14 @@ class DownloadTrackIn(BaseModel):
     isrc: str | None = None
     version: str | None = None
     requested_quality: AudioQuality | None = None
+
+    @field_validator("requested_quality")
+    @classmethod
+    def validate_requested_quality(cls, value: AudioQuality | None) -> AudioQuality | None:
+        if value is not None and not is_allowed_download_format(value.format):
+            allowed = ", ".join(ALLOWED_DOWNLOAD_FORMATS)
+            raise ValueError(f"requested download format must be one of: {allowed}")
+        return value
 
 
 def _board_item(spec: BoardSpec, sort_order: int) -> dict[str, Any]:
@@ -393,7 +407,6 @@ def _audio_media_type(format_name: str) -> str:
         "flac": "audio/flac",
         "wav": "audio/wav",
         "dsf": "audio/dsd",
-        "dff": "audio/dsd",
     }.get(format_name.lower(), "application/octet-stream")
 
 

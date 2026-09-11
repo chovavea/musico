@@ -1,0 +1,18 @@
+id = "taurus"
+name = "example.invalid"
+entrypoint = "source:create_source"
+priority = 90
+hosts = [
+  "example.invalid",
+  "example.invalid",
+  "kuwo.cn",
+  "kugou.com",
+  "qqmusic.qq.com",
+  "music.126.net",
+  "migu.cn",
+]
+
+[config_schema]
+max_results = 8
+base_url = "https://example.invalid"
+cookie_env = "MUSICO_DL_TAURUS_COOKIE"
