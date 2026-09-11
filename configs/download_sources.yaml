@@ -1,14 +1,23 @@
+# Which download sources are enabled, and in what order.
+#
+# This file is the single place where the download-source environment
+# variables are declared: `config.base_url_env` / `config.cookie_env` /
+# `config.hosts_env` each name an environment variable, and the real values
+# are filled in the untracked .env.  Nothing else in the repository names
+# them, so swapping a site only means editing this file plus .env.
+#
+# A source whose base_url_env has no value is skipped with a
+# download_source_missing_base_url warning; the other sources keep working.
 sources:
   - id: aries
     enabled: true
     priority: 100
     config:
-      base_url: https://www.example.invalid
-      max_results: 8
+      base_url_env: MUSICO_DL_ARIES_BASE_URL
   - id: taurus
     enabled: true
     priority: 90
     config:
-      base_url: https://example.invalid
-      max_results: 8
+      base_url_env: MUSICO_DL_TAURUS_BASE_URL
       cookie_env: MUSICO_DL_TAURUS_COOKIE
+      hosts_env: MUSICO_DL_TAURUS_EXTRA_HOSTS

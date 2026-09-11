@@ -1,8 +1,11 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -45,7 +48,9 @@ class Settings(BaseSettings):
     download_source_dirs: str = Field(default="", alias="DOWNLOAD_SOURCE_DIRS")
     download_max_retries: int = Field(default=3, alias="DOWNLOAD_MAX_RETRIES")
     download_timeout_sec: float = Field(default=300.0, alias="DOWNLOAD_TIMEOUT_SEC")
-    download_max_file_size: int = Field(default=2 * 1024 * 1024 * 1024, alias="DOWNLOAD_MAX_FILE_SIZE")
+    download_max_file_size: int = Field(
+        default=2 * 1024 * 1024 * 1024, alias="DOWNLOAD_MAX_FILE_SIZE"
+    )
     download_poll_sec: float = Field(default=1.0, alias="DOWNLOAD_POLL_SEC")
     download_lease_sec: int = Field(default=60, alias="DOWNLOAD_LEASE_SEC")
 
@@ -65,6 +70,31 @@ class Settings(BaseSettings):
         if url.startswith("postgresql+psycopg://"):
             return url
         return url
+
+
+def export_env_file(path: Path | None = None) -> None:
+    """Copy ``.env`` entries into ``os.environ`` for plugin-level lookups.
+
+    pydantic-settings loads ``.env`` into the Settings object only, but the
+    download sources resolve their addresses through ``os.environ`` so real
+    hosts can stay out of the repository.  Existing variables always win.
+    """
+    candidates = [path] if path is not None else [Path(".env"), _REPO_ROOT / ".env"]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser()
+        if resolved in seen or not resolved.is_file():
+            continue
+        seen.add(resolved)
+        for raw_line in resolved.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip().removeprefix("export ").strip()
+            if not key:
+                continue
+            os.environ.setdefault(key, value.strip().strip('"').strip("'"))
 
 
 @lru_cache

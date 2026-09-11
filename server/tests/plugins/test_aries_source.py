@@ -7,6 +7,11 @@ from app.download_sources.registry import load_download_sources
 from app.download_sources.source_aries.source import AriesSource
 
 
+async def _offline_guard(_url: str, _hosts: object) -> None:
+    """Every request is served by MockTransport, so skip the real DNS guard."""
+    return None
+
+
 @pytest.mark.asyncio
 async def test_aries_source_posts_encoded_search_and_parses_quality_routes() -> None:
     requests: list[httpx.Request] = []
@@ -42,9 +47,15 @@ async def test_aries_source_posts_encoded_search_and_parses_quality_routes() -> 
         )
         return httpx.Response(200, text=html)
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://www.example.invalid")
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://mirror.example"
+    )
     try:
-        source = AriesSource(client, {"max_results": 1})
+        source = AriesSource(
+            client,
+            {"base_url": "https://mirror.example", "max_results": 1},
+            url_guard=_offline_guard,
+        )
         candidates = await source.search(
             TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
         )
@@ -87,19 +98,23 @@ async def test_aries_source_reports_the_daily_quota_page_instead_of_crashing() -
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://www.example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(client, {"max_results": 1})
+        source = AriesSource(
+            client,
+            {"base_url": "https://mirror.example", "max_results": 1},
+            url_guard=_offline_guard,
+        )
         track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
         assert await source.search(track) == []
         candidate = DownloadCandidate(
             source_id="aries",
-            source_track_id="https://www.example.invalid/music/a/sky",
+            source_track_id="https://mirror.example/music/a/sky",
             title="晴天",
             artist="周杰伦",
             quality=AudioQuality(format="flac"),
-            locator={"detail_url": "https://www.example.invalid/music/a/sky"},
+            locator={"detail_url": "https://mirror.example/music/a/sky"},
         )
         with pytest.raises(ValueError, match="no direct download link"):
             await source.resolve(candidate)
@@ -133,10 +148,14 @@ async def test_aries_source_uses_second_search_endpoint_only_as_fallback() -> No
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://www.example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(client, {"max_results": 1})
+        source = AriesSource(
+            client,
+            {"base_url": "https://mirror.example", "max_results": 1},
+            url_guard=_offline_guard,
+        )
         candidates = await source.search(
             TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
         )
@@ -166,18 +185,22 @@ async def test_aries_source_refreshes_signed_url_and_strips_rsc_escape() -> None
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://www.example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(client)
+        source = AriesSource(
+            client,
+            {"base_url": "https://mirror.example"},
+            url_guard=_offline_guard,
+        )
         candidate = {
             "source_id": "aries",
-            "source_track_id": "https://www.example.invalid/music/c/sky",
+            "source_track_id": "https://mirror.example/music/c/sky",
             "title": "晴天",
             "artist": "周杰伦",
             "quality": {"format": "flac", "sample_rate_hz": 96_000, "bit_depth": 24},
             "locator": {
-                "detail_url": "https://www.example.invalid/music/c/sky",
+                "detail_url": "https://mirror.example/music/c/sky",
                 "download_url": "https://m801.music.126.net/audio.flac?sig=stale",
             },
         }
@@ -215,7 +238,7 @@ def test_aries_source_uses_explicit_page_quality_when_present() -> None:
     )
     page = _extract_page_data(
         html,
-        "https://www.example.invalid/music/a/sky",
+        "https://mirror.example/music/a/sky",
     )
     assert page.quality == "24bit 192000Hz"
     assert page.size_bytes == int(52.8 * 1024**2)
@@ -347,10 +370,14 @@ async def test_aries_source_rejects_redirect_to_private_page() -> None:
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://www.example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(client, url_guard=guard)
+        source = AriesSource(
+            client,
+            {"base_url": "https://mirror.example"},
+            url_guard=guard,
+        )
         candidates = await source.search(
             TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
         )
@@ -358,3 +385,45 @@ async def test_aries_source_rejects_redirect_to_private_page() -> None:
         assert all("127.0.0.1" not in url for url in requests)
     finally:
         await client.aclose()
+def test_download_source_resolves_base_url_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MUSICO_DL_TEST_BASE_URL", "https://mirror.example")
+    client = httpx.AsyncClient()
+    try:
+        registry = load_download_sources(
+            client,
+            config={
+                "sources": [
+                    {"id": "aries", "config": {"base_url_env": "MUSICO_DL_TEST_BASE_URL"}}
+                ]
+            },
+        )
+        source = registry.sources["aries"]
+        assert source.source._base_url == "https://mirror.example"
+        assert "mirror.example" in source.hosts
+    finally:
+        import asyncio
+
+        asyncio.run(client.aclose())
+
+
+def test_download_source_is_skipped_when_base_url_env_has_no_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MUSICO_DL_TEST_BASE_URL", raising=False)
+    client = httpx.AsyncClient()
+    try:
+        registry = load_download_sources(
+            client,
+            config={
+                "sources": [
+                    {"id": "aries", "config": {"base_url_env": "MUSICO_DL_TEST_BASE_URL"}}
+                ]
+            },
+        )
+        assert "aries" not in registry.sources
+    finally:
+        import asyncio
+
+        asyncio.run(client.aclose())

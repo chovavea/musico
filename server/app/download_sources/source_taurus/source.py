@@ -23,7 +23,6 @@ log = structlog.get_logger(__name__)
 UrlGuard = Callable[[str, Sequence[str]], Awaitable[None]]
 
 _SOURCE_ID = "taurus"
-_DEFAULT_BASE_URL = "https://example.invalid"
 _SEARCH_PATH = "/ajax.php?act=search"
 _RESOLVE_PATH = "/ajax.php?act=getUrl"
 _DEFAULT_MAX_RESULTS = 8
@@ -32,7 +31,7 @@ _FLAC_BITRATE = "2000"
 _QUALITY_VARIANTS = (("flac", _FLAC_BITRATE),)
 
 
-class TaurusSessionError(ValueError):
+class SourceSessionError(ValueError):
     """Raised when the upstream anti-bot/session gate rejects a request."""
 
 
@@ -62,9 +61,7 @@ class TaurusSource:
         self._base_url = _normalize_base_url(options.get("base_url"))
         self._referer = f"{self._base_url}/"
         self._page_hosts = _hosts_for_base_url(self._base_url)
-        self._cookie_env = _normalize_cookie_env(
-            options.get("cookie_env", "MUSICO_DL_TAURUS_COOKIE")
-        )
+        self._cookie_env = _normalize_cookie_env(options.get("cookie_env", ""))
 
     async def search(self, track: TrackRef) -> list[DownloadCandidate]:
         keyword = " ".join(
@@ -81,7 +78,7 @@ class TaurusSource:
                     "size": str(_SEARCH_SIZE),
                 },
             )
-        except (TaurusSessionError, httpx.HTTPError, ValueError) as exc:
+        except (SourceSessionError, httpx.HTTPError, ValueError) as exc:
             _log_upstream_failure("search", exc)
             return []
 
@@ -153,7 +150,7 @@ class TaurusSource:
         }
         try:
             response = await self._post_form(_RESOLVE_PATH, payload)
-        except (TaurusSessionError, httpx.HTTPError, ValueError) as exc:
+        except (SourceSessionError, httpx.HTTPError, ValueError) as exc:
             _log_upstream_failure("resolve", exc)
             raise ValueError("taurus resolve request failed") from exc
 
@@ -194,7 +191,7 @@ class TaurusSource:
             follow_redirects=False,
         )
         if response.status_code == 468:
-            raise TaurusSessionError("taurus session rejected")
+            raise SourceSessionError("taurus session rejected")
         if response.status_code in REDIRECT_STATUSES:
             raise ValueError("taurus API redirected unexpectedly")
         response.raise_for_status()
@@ -315,7 +312,9 @@ def _parse_duration(value: object) -> int | None:
 
 def _normalize_base_url(value: object) -> str:
     raw = str(value).strip() if value is not None else ""
-    parsed = urlparse(raw or _DEFAULT_BASE_URL)
+    if not raw:
+        raise ValueError("taurus base_url is required")
+    parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("taurus base_url must be an http(s) URL with a host")
     return f"{parsed.scheme}://{parsed.netloc}"
@@ -333,7 +332,7 @@ def _normalize_cookie_env(value: object) -> str:
 def _hosts_for_base_url(base_url: str) -> tuple[str, ...]:
     host = (urlparse(base_url).hostname or "").lower().rstrip(".")
     if not host:
-        return ("example.invalid",)
+        return ()
     hosts = [host]
     if host.startswith("www."):
         hosts.append(host.removeprefix("www."))
@@ -343,7 +342,7 @@ def _hosts_for_base_url(base_url: str) -> tuple[str, ...]:
 
 
 def _log_upstream_failure(operation: str, error: Exception) -> None:
-    if isinstance(error, TaurusSessionError):
+    if isinstance(error, SourceSessionError):
         log.warning(
             "download_source_session_rejected",
             source_id=_SOURCE_ID,

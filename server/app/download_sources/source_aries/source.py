@@ -25,7 +25,6 @@ from app.domain.models import (
 log = structlog.get_logger(__name__)
 
 UrlGuard = Callable[[str, Sequence[str]], Awaitable[None]]
-_DEFAULT_BASE_URL = "https://www.example.invalid"
 _SEARCH_API_PATHS = (
     "/api/player/searchOnlineMusicTwo",
     "/api/player/searchOnlineMusicOne",
@@ -288,7 +287,9 @@ class AriesSource:
 
 def _normalize_base_url(value: object) -> str:
     raw = str(value).strip() if value is not None else ""
-    parsed = urlparse(raw or _DEFAULT_BASE_URL)
+    if not raw:
+        raise ValueError("download source base_url is required")
+    parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("download source base_url must be an http(s) URL with a host")
     return f"{parsed.scheme}://{parsed.netloc}"
@@ -297,7 +298,7 @@ def _normalize_base_url(value: object) -> str:
 def _hosts_for_base_url(base_url: str) -> tuple[str, ...]:
     host = (urlparse(base_url).hostname or "").lower().rstrip(".")
     if not host:
-        return ("example.invalid", "www.example.invalid")
+        return ()
     hosts = [host]
     if host.startswith("www."):
         hosts.append(host.removeprefix("www."))

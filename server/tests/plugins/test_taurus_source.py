@@ -9,6 +9,11 @@ from app.download_sources.registry import load_download_sources
 from app.download_sources.source_taurus.source import TaurusSource
 
 
+async def _offline_guard(_url: str, _hosts: object) -> None:
+    """Every request is served by MockTransport, so skip the real DNS guard."""
+    return None
+
+
 @pytest.mark.asyncio
 async def test_taurus_search_parses_candidates_and_uses_form_request(
     monkeypatch: pytest.MonkeyPatch,
@@ -47,13 +52,21 @@ async def test_taurus_search_parses_candidates_and_uses_form_request(
             },
         )
 
-    monkeypatch.setenv("MUSICO_DL_TAURUS_COOKIE", "sl-session=fake")
+    monkeypatch.setenv("MUSICO_DL_TEST_COOKIE", "sl-session=fake")
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(client, {"max_results": 4})
+        source = TaurusSource(
+            client,
+            {
+                "base_url": "https://mirror.example",
+                "cookie_env": "MUSICO_DL_TEST_COOKIE",
+                "max_results": 4,
+            },
+            url_guard=_offline_guard,
+        )
         candidates = await source.search(
             TrackRef(
                 platform="qqmusic",
@@ -109,10 +122,14 @@ async def test_taurus_resolve_posts_locator_and_returns_range_header() -> None:
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(client)
+        source = TaurusSource(
+            client,
+            {"base_url": "https://mirror.example"},
+            url_guard=_offline_guard,
+        )
         candidate = DownloadCandidate(
             source_id="taurus",
             source_track_id="sky:flac:2000",
@@ -130,7 +147,7 @@ async def test_taurus_resolve_posts_locator_and_returns_range_header() -> None:
         resolved = await source.resolve(candidate, offset=10)
         assert resolved.url == "https://m801.music.126.net/sky.flac"
         assert resolved.headers == {
-            "Referer": "https://example.invalid/",
+            "Referer": "https://mirror.example/",
             "Range": "bytes=10-",
         }
         assert len(requests) == 1
@@ -148,10 +165,14 @@ async def test_taurus_does_not_resolve_non_flac_format() -> None:
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(client)
+        source = TaurusSource(
+            client,
+            {"base_url": "https://mirror.example"},
+            url_guard=_offline_guard,
+        )
         candidate = DownloadCandidate(
             source_id="taurus",
             source_track_id="sky:mp3:320",
@@ -199,10 +220,14 @@ async def test_taurus_search_ignores_title_mismatches_even_when_query_has_isrc()
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(client)
+        source = TaurusSource(
+            client,
+            {"base_url": "https://mirror.example"},
+            url_guard=_offline_guard,
+        )
         candidates = await source.search(
             TrackRef(
                 platform="qqmusic",
@@ -243,10 +268,14 @@ async def test_taurus_search_does_not_treat_signing_time_as_duration() -> None:
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(client)
+        source = TaurusSource(
+            client,
+            {"base_url": "https://mirror.example"},
+            url_guard=_offline_guard,
+        )
         candidates = await source.search(
             TrackRef(
                 platform="qqmusic",
@@ -279,10 +308,14 @@ async def test_taurus_search_treats_http_468_as_empty_result() -> None:
 
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        base_url="https://example.invalid",
+        base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(client)
+        source = TaurusSource(
+            client,
+            {"base_url": "https://mirror.example"},
+            url_guard=_offline_guard,
+        )
         assert await source.search(
             TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
         ) == []
@@ -299,7 +332,7 @@ def test_taurus_source_registers_and_can_be_disabled() -> None:
                 "sources": [
                     {
                         "id": "taurus",
-                        "config": {"base_url": "https://example.invalid"},
+                        "config": {"base_url": "https://mirror.example"},
                     }
                 ]
             },
@@ -307,7 +340,7 @@ def test_taurus_source_registers_and_can_be_disabled() -> None:
         assert "taurus" in registry.sources
         assert "music.126.net" in registry.sources["taurus"].hosts
         assert "kuwo.cn" in registry.sources["taurus"].hosts
-        assert registry.sources["taurus"].source._base_url == "https://example.invalid"
+        assert registry.sources["taurus"].source._base_url == "https://mirror.example"
 
         disabled = load_download_sources(
             client,
@@ -324,7 +357,10 @@ def test_taurus_source_rejects_invalid_cookie_env_name() -> None:
     client = httpx.AsyncClient()
     try:
         with pytest.raises(ValueError, match="cookie_env"):
-            TaurusSource(client, {"cookie_env": "COOKIE-NAME"})
+            TaurusSource(
+                client,
+                {"base_url": "https://mirror.example", "cookie_env": "COOKIE-NAME"},
+            )
     finally:
         import asyncio
 

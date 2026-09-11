@@ -1,0 +1,9 @@
+id = "aries"
+name = "白羊座"
+entrypoint = "source:create_source"
+priority = 100
+requires_base_url = true
+hosts = ["music.126.net", "kuwo.cn"]
+
+[config_schema]
+max_results = 8
