@@ -15,4 +15,4 @@ repos:
         entry: python
         args:
           - "-c"
-          - "import subprocess, sys; raise SystemExit(subprocess.call([sys.executable, '-m', 'mypy', 'app'], cwd='backend'))"
+          - "import subprocess, sys; raise SystemExit(subprocess.call([sys.executable, '-m', 'mypy', 'app'], cwd='server'))"

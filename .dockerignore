@@ -8,9 +8,9 @@ tmp
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
-frontend/node_modules
-frontend/dist
-backend/*.egg-info
+web/node_modules
+web/dist
+server/*.egg-info
 实施方案.md
 *.md
 !README.md
