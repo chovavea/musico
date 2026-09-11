@@ -6,7 +6,7 @@ import httpx
 import pytest
 from app.domain.models import DownloadCandidate, TrackRef
 from app.download_sources.registry import load_download_sources
-from app.download_sources.source_taurus.source import TaurusSource
+from app.download_sources.source_sonoma.source import SonomaSource
 
 
 async def _offline_guard(_url: str, _hosts: object) -> None:
@@ -15,7 +15,7 @@ async def _offline_guard(_url: str, _hosts: object) -> None:
 
 
 @pytest.mark.asyncio
-async def test_taurus_search_parses_candidates_and_uses_form_request(
+async def test_sonoma_search_parses_candidates_and_uses_form_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[httpx.Request] = []
@@ -58,7 +58,7 @@ async def test_taurus_search_parses_candidates_and_uses_form_request(
         base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(
+        source = SonomaSource(
             client,
             {
                 "base_url": "https://mirror.example",
@@ -80,7 +80,7 @@ async def test_taurus_search_parses_candidates_and_uses_form_request(
         )
         assert len(candidates) == 1
         candidate = candidates[0]
-        assert candidate.source_id == "taurus"
+        assert candidate.source_id == "sonoma"
         assert candidate.source_track_id == "sky:flac:2000"
         assert candidate.quality.format == "flac"
         assert candidate.duration_ms == 269_000
@@ -102,7 +102,7 @@ async def test_taurus_search_parses_candidates_and_uses_form_request(
 
 
 @pytest.mark.asyncio
-async def test_taurus_resolve_posts_locator_and_returns_range_header() -> None:
+async def test_sonoma_resolve_posts_locator_and_returns_range_header() -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -125,13 +125,13 @@ async def test_taurus_resolve_posts_locator_and_returns_range_header() -> None:
         base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(
+        source = SonomaSource(
             client,
             {"base_url": "https://mirror.example"},
             url_guard=_offline_guard,
         )
         candidate = DownloadCandidate(
-            source_id="taurus",
+            source_id="sonoma",
             source_track_id="sky:flac:2000",
             title="晴天",
             artist="周杰伦",
@@ -156,7 +156,7 @@ async def test_taurus_resolve_posts_locator_and_returns_range_header() -> None:
 
 
 @pytest.mark.asyncio
-async def test_taurus_does_not_resolve_non_flac_format() -> None:
+async def test_sonoma_does_not_resolve_non_flac_format() -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -168,13 +168,13 @@ async def test_taurus_does_not_resolve_non_flac_format() -> None:
         base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(
+        source = SonomaSource(
             client,
             {"base_url": "https://mirror.example"},
             url_guard=_offline_guard,
         )
         candidate = DownloadCandidate(
-            source_id="taurus",
+            source_id="sonoma",
             source_track_id="sky:mp3:320",
             title="晴天",
             artist="周杰伦",
@@ -189,7 +189,7 @@ async def test_taurus_does_not_resolve_non_flac_format() -> None:
 
 
 @pytest.mark.asyncio
-async def test_taurus_search_ignores_title_mismatches_even_when_query_has_isrc() -> None:
+async def test_sonoma_search_ignores_title_mismatches_even_when_query_has_isrc() -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -223,7 +223,7 @@ async def test_taurus_search_ignores_title_mismatches_even_when_query_has_isrc()
         base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(
+        source = SonomaSource(
             client,
             {"base_url": "https://mirror.example"},
             url_guard=_offline_guard,
@@ -246,7 +246,7 @@ async def test_taurus_search_ignores_title_mismatches_even_when_query_has_isrc()
 
 
 @pytest.mark.asyncio
-async def test_taurus_search_does_not_treat_signing_time_as_duration() -> None:
+async def test_sonoma_search_does_not_treat_signing_time_as_duration() -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -271,7 +271,7 @@ async def test_taurus_search_does_not_treat_signing_time_as_duration() -> None:
         base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(
+        source = SonomaSource(
             client,
             {"base_url": "https://mirror.example"},
             url_guard=_offline_guard,
@@ -293,8 +293,8 @@ async def test_taurus_search_does_not_treat_signing_time_as_duration() -> None:
         await client.aclose()
 
 
-def test_taurus_duration_ignores_signing_time() -> None:
-    from app.download_sources.source_taurus.source import _duration_ms
+def test_sonoma_duration_ignores_signing_time() -> None:
+    from app.download_sources.source_sonoma.source import _duration_ms
 
     assert _duration_ms({"time": "1710000000", "sign": "signed"}) is None
     assert _duration_ms({"duration": "269", "time": "1710000000"}) == 269_000
@@ -302,7 +302,7 @@ def test_taurus_duration_ignores_signing_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_taurus_search_treats_http_468_as_empty_result() -> None:
+async def test_sonoma_search_treats_http_468_as_empty_result() -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(468, text="challenge")
 
@@ -311,7 +311,7 @@ async def test_taurus_search_treats_http_468_as_empty_result() -> None:
         base_url="https://mirror.example",
     )
     try:
-        source = TaurusSource(
+        source = SonomaSource(
             client,
             {"base_url": "https://mirror.example"},
             url_guard=_offline_guard,
@@ -323,7 +323,7 @@ async def test_taurus_search_treats_http_468_as_empty_result() -> None:
         await client.aclose()
 
 
-def test_taurus_source_registers_and_can_be_disabled() -> None:
+def test_sonoma_source_registers_and_can_be_disabled() -> None:
     client = httpx.AsyncClient()
     try:
         registry = load_download_sources(
@@ -331,33 +331,33 @@ def test_taurus_source_registers_and_can_be_disabled() -> None:
             config={
                 "sources": [
                     {
-                        "id": "taurus",
+                        "id": "sonoma",
                         "config": {"base_url": "https://mirror.example"},
                     }
                 ]
             },
         )
-        assert "taurus" in registry.sources
-        assert "music.126.net" in registry.sources["taurus"].hosts
-        assert "kuwo.cn" in registry.sources["taurus"].hosts
-        assert registry.sources["taurus"].source._base_url == "https://mirror.example"
+        assert "sonoma" in registry.sources
+        assert "music.126.net" in registry.sources["sonoma"].hosts
+        assert "kuwo.cn" in registry.sources["sonoma"].hosts
+        assert registry.sources["sonoma"].source._base_url == "https://mirror.example"
 
         disabled = load_download_sources(
             client,
-            config={"sources": [{"id": "taurus", "enabled": False}]},
+            config={"sources": [{"id": "sonoma", "enabled": False}]},
         )
-        assert "taurus" not in disabled.sources
+        assert "sonoma" not in disabled.sources
     finally:
         import asyncio
 
         asyncio.run(client.aclose())
 
 
-def test_taurus_source_rejects_invalid_cookie_env_name() -> None:
+def test_sonoma_source_rejects_invalid_cookie_env_name() -> None:
     client = httpx.AsyncClient()
     try:
         with pytest.raises(ValueError, match="cookie_env"):
-            TaurusSource(
+            SonomaSource(
                 client,
                 {"base_url": "https://mirror.example", "cookie_env": "COOKIE-NAME"},
             )

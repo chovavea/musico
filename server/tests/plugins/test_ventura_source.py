@@ -4,7 +4,7 @@ import httpx
 import pytest
 from app.domain.models import AudioQuality, DownloadCandidate, TrackRef
 from app.download_sources.registry import load_download_sources
-from app.download_sources.source_aries.source import AriesSource
+from app.download_sources.source_ventura.source import VenturaSource
 
 
 async def _offline_guard(_url: str, _hosts: object) -> None:
@@ -13,7 +13,7 @@ async def _offline_guard(_url: str, _hosts: object) -> None:
 
 
 @pytest.mark.asyncio
-async def test_aries_source_posts_encoded_search_and_parses_quality_routes() -> None:
+async def test_ventura_source_posts_encoded_search_and_parses_quality_routes() -> None:
     requests: list[httpx.Request] = []
     result = {
         "id": "sky",
@@ -51,7 +51,7 @@ async def test_aries_source_posts_encoded_search_and_parses_quality_routes() -> 
         transport=httpx.MockTransport(handler), base_url="https://mirror.example"
     )
     try:
-        source = AriesSource(
+        source = VenturaSource(
             client,
             {"base_url": "https://mirror.example", "max_results": 1},
             url_guard=_offline_guard,
@@ -79,7 +79,7 @@ async def test_aries_source_posts_encoded_search_and_parses_quality_routes() -> 
 
 
 @pytest.mark.asyncio
-async def test_aries_source_reports_the_daily_quota_page_instead_of_crashing() -> None:
+async def test_ventura_source_reports_the_daily_quota_page_instead_of_crashing() -> None:
     limited = (
         "<div>今日访问已达限额，可明日再来。</div>"
         "<div>如果您已注册过，可登录后访问</div>"
@@ -101,7 +101,7 @@ async def test_aries_source_reports_the_daily_quota_page_instead_of_crashing() -
         base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(
+        source = VenturaSource(
             client,
             {"base_url": "https://mirror.example", "max_results": 1},
             url_guard=_offline_guard,
@@ -109,7 +109,7 @@ async def test_aries_source_reports_the_daily_quota_page_instead_of_crashing() -
         track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
         assert await source.search(track) == []
         candidate = DownloadCandidate(
-            source_id="aries",
+            source_id="ventura",
             source_track_id="https://mirror.example/music/a/sky",
             title="晴天",
             artist="周杰伦",
@@ -123,7 +123,7 @@ async def test_aries_source_reports_the_daily_quota_page_instead_of_crashing() -
 
 
 @pytest.mark.asyncio
-async def test_aries_source_uses_second_search_endpoint_only_as_fallback() -> None:
+async def test_ventura_source_uses_second_search_endpoint_only_as_fallback() -> None:
     methods: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -151,7 +151,7 @@ async def test_aries_source_uses_second_search_endpoint_only_as_fallback() -> No
         base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(
+        source = VenturaSource(
             client,
             {"base_url": "https://mirror.example", "max_results": 1},
             url_guard=_offline_guard,
@@ -169,7 +169,7 @@ async def test_aries_source_uses_second_search_endpoint_only_as_fallback() -> No
 
 
 @pytest.mark.asyncio
-async def test_aries_source_refreshes_signed_url_and_strips_rsc_escape() -> None:
+async def test_ventura_source_refreshes_signed_url_and_strips_rsc_escape() -> None:
     calls = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -188,13 +188,13 @@ async def test_aries_source_refreshes_signed_url_and_strips_rsc_escape() -> None
         base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(
+        source = VenturaSource(
             client,
             {"base_url": "https://mirror.example"},
             url_guard=_offline_guard,
         )
         candidate = {
-            "source_id": "aries",
+            "source_id": "ventura",
             "source_track_id": "https://mirror.example/music/c/sky",
             "title": "晴天",
             "artist": "周杰伦",
@@ -214,8 +214,8 @@ async def test_aries_source_refreshes_signed_url_and_strips_rsc_escape() -> None
         await client.aclose()
 
 
-def test_aries_quality_parser_does_not_guess_missing_dimensions() -> None:
-    from app.download_sources.source_aries.source import _quality_from_text
+def test_ventura_quality_parser_does_not_guess_missing_dimensions() -> None:
+    from app.download_sources.source_ventura.source import _quality_from_text
 
     unknown = _quality_from_text("无损音质")
     assert unknown.format == "flac"
@@ -228,8 +228,8 @@ def test_aries_quality_parser_does_not_guess_missing_dimensions() -> None:
     assert precise.bit_depth == 24
 
 
-def test_aries_source_uses_explicit_page_quality_when_present() -> None:
-    from app.download_sources.source_aries.source import _extract_page_data
+def test_ventura_source_uses_explicit_page_quality_when_present() -> None:
+    from app.download_sources.source_ventura.source import _extract_page_data
 
     html = (
         r'''<script>self.__next_f.push([1,"{\"url\":\"https://m801.music.126.net/'''
@@ -245,7 +245,7 @@ def test_aries_source_uses_explicit_page_quality_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_aries_source_uses_configured_base_url() -> None:
+async def test_ventura_source_uses_configured_base_url() -> None:
     requests: list[httpx.Request] = []
 
     async def allow(_url: str, hosts: object) -> None:
@@ -274,7 +274,7 @@ async def test_aries_source_uses_configured_base_url() -> None:
         base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(
+        source = VenturaSource(
             client,
             {"base_url": "https://mirror.example", "max_results": 1},
             url_guard=allow,
@@ -292,7 +292,7 @@ async def test_aries_source_uses_configured_base_url() -> None:
         await client.aclose()
 
 
-def test_aries_source_registers_configured_base_url_host() -> None:
+def test_ventura_source_registers_configured_base_url_host() -> None:
     client = httpx.AsyncClient()
     try:
         registry = load_download_sources(
@@ -300,14 +300,14 @@ def test_aries_source_registers_configured_base_url_host() -> None:
             config={
                 "sources": [
                     {
-                        "id": "aries",
+                        "id": "ventura",
                         "hosts": ["cdn.mirror.example"],
                         "config": {"base_url": "https://mirror.example"},
                     }
                 ]
             },
         )
-        source = registry.sources["aries"]
+        source = registry.sources["ventura"]
         assert "mirror.example" in source.hosts
         assert "cdn.mirror.example" in source.hosts
         assert source.source._base_url == "https://mirror.example"
@@ -317,25 +317,25 @@ def test_aries_source_registers_configured_base_url_host() -> None:
         asyncio.run(client.aclose())
 
 
-def test_aries_source_rejects_invalid_base_url() -> None:
+def test_ventura_source_rejects_invalid_base_url() -> None:
     client = httpx.AsyncClient()
     try:
         with pytest.raises(ValueError, match="base_url"):
-            AriesSource(client, {"base_url": "ftp://mirror.example"})
+            VenturaSource(client, {"base_url": "ftp://mirror.example"})
     finally:
         import asyncio
 
         asyncio.run(client.aclose())
 
 
-def test_aries_source_can_be_disabled() -> None:
+def test_ventura_source_can_be_disabled() -> None:
     client = httpx.AsyncClient()
     try:
         registry = load_download_sources(
             client,
-            config={"sources": [{"id": "aries", "enabled": False}]},
+            config={"sources": [{"id": "ventura", "enabled": False}]},
         )
-        assert "aries" not in registry.sources
+        assert "ventura" not in registry.sources
     finally:
         import asyncio
 
@@ -343,7 +343,7 @@ def test_aries_source_can_be_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_aries_source_rejects_redirect_to_private_page() -> None:
+async def test_ventura_source_rejects_redirect_to_private_page() -> None:
     requests: list[str] = []
 
     async def guard(url: str, _hosts: object) -> None:
@@ -373,7 +373,7 @@ async def test_aries_source_rejects_redirect_to_private_page() -> None:
         base_url="https://mirror.example",
     )
     try:
-        source = AriesSource(
+        source = VenturaSource(
             client,
             {"base_url": "https://mirror.example"},
             url_guard=guard,
@@ -395,11 +395,11 @@ def test_download_source_resolves_base_url_from_environment(
             client,
             config={
                 "sources": [
-                    {"id": "aries", "config": {"base_url_env": "MUSICO_DL_TEST_BASE_URL"}}
+                    {"id": "ventura", "config": {"base_url_env": "MUSICO_DL_TEST_BASE_URL"}}
                 ]
             },
         )
-        source = registry.sources["aries"]
+        source = registry.sources["ventura"]
         assert source.source._base_url == "https://mirror.example"
         assert "mirror.example" in source.hosts
     finally:
@@ -418,11 +418,11 @@ def test_download_source_is_skipped_when_base_url_env_has_no_value(
             client,
             config={
                 "sources": [
-                    {"id": "aries", "config": {"base_url_env": "MUSICO_DL_TEST_BASE_URL"}}
+                    {"id": "ventura", "config": {"base_url_env": "MUSICO_DL_TEST_BASE_URL"}}
                 ]
             },
         )
-        assert "aries" not in registry.sources
+        assert "ventura" not in registry.sources
     finally:
         import asyncio
 

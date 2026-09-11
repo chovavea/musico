@@ -9,15 +9,15 @@
 # A source whose base_url_env has no value is skipped with a
 # download_source_missing_base_url warning; the other sources keep working.
 sources:
-  - id: aries
+  - id: ventura
     enabled: true
     priority: 100
     config:
-      base_url_env: MUSICO_DL_ARIES_BASE_URL
-  - id: taurus
+      base_url_env: MUSICO_DL_VENTURA_BASE_URL
+  - id: sonoma
     enabled: true
     priority: 90
     config:
-      base_url_env: MUSICO_DL_TAURUS_BASE_URL
-      cookie_env: MUSICO_DL_TAURUS_COOKIE
-      hosts_env: MUSICO_DL_TAURUS_EXTRA_HOSTS
+      base_url_env: MUSICO_DL_SONOMA_BASE_URL
+      cookie_env: MUSICO_DL_SONOMA_COOKIE
+      hosts_env: MUSICO_DL_SONOMA_EXTRA_HOSTS

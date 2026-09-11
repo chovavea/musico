@@ -1,5 +1,5 @@
-id = "aries"
-name = "白羊座"
+id = "ventura"
+name = "Ventura"
 entrypoint = "source:create_source"
 priority = 100
 requires_base_url = true
