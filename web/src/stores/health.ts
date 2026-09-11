@@ -8,6 +8,7 @@ export const useHealthStore = defineStore("health", {
     payload: null as HealthPayload | null,
     error: "",
     loading: false,
+    lastRefreshedAt: "",
   }),
   getters: {
     score(state): number {
@@ -19,12 +20,15 @@ export const useHealthStore = defineStore("health", {
   },
   actions: {
     async refresh() {
+      if (this.loading) return false;
       this.loading = true;
       try {
         const res = await health();
         if (res.code === 0) {
           this.payload = res.data;
           this.error = "";
+          this.lastRefreshedAt = new Date().toISOString();
+          return true;
         } else {
           this.error = res.msg || "状态检查失败";
         }
@@ -33,6 +37,7 @@ export const useHealthStore = defineStore("health", {
       } finally {
         this.loading = false;
       }
+      return false;
     },
   },
 });

@@ -1,0 +1,19 @@
+{
+  "name": "Musico 音乐榜单",
+  "short_name": "Musico",
+  "description": "浏览聚合音乐榜单、试听并管理本地音乐库。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#18181b",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

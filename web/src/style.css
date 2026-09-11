@@ -5,11 +5,17 @@
 :root {
   color-scheme: light;
   --cover-fade: rgb(244 244 245);
+  --text-primary: rgb(24 24 27);
+  --text-secondary: rgb(82 82 91);
+  --text-tertiary: rgb(113 113 122);
 }
 
 html.dark {
   color-scheme: dark;
   --cover-fade: rgb(24 24 27);
+  --text-primary: rgb(244 244 245);
+  --text-secondary: rgb(212 212 216);
+  --text-tertiary: rgb(161 161 170);
 }
 
 html,
@@ -20,12 +26,34 @@ body,
 }
 
 button,
-a {
+a,
+input {
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
   @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.text-primary {
+  color: var(--text-primary);
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+.text-tertiary {
+  color: var(--text-tertiary);
 }
 
 .tabular {
@@ -95,5 +123,16 @@ body {
     box-shadow:
       0 0 0.55rem var(--status-glow),
       0 0 1.25rem color-mix(in srgb, var(--status-glow) 90%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useTrackDownload } from "../composables/useTrackDownload";
 import { useCoverPalette } from "../composables/useCoverTint";
 import { chartShortName, platformLabel } from "../lib/boards";
 import { usePlayerStore } from "../stores/player";
 import type { BoardInfo, LatestBoard, RankItem } from "../types";
+import CoverImage from "./CoverImage.vue";
+import TrackDownloadAction from "./TrackDownloadAction.vue";
 
 const props = defineProps<{ board: BoardInfo; latest?: LatestBoard }>();
 const player = usePlayerStore();
-const download = useTrackDownload();
 
 const topFive = computed(() => props.latest?.items.slice(0, 5) ?? []);
 const top = computed(() => topFive.value[0]);
@@ -16,10 +16,10 @@ const coverUrl = computed(() => top.value?.cover_url ?? null);
 const palette = useCoverPalette(coverUrl);
 
 function rankKlass(rank: number): string {
-  if (rank === 1) return "text-amber-500";
-  if (rank === 2) return "text-zinc-400";
-  if (rank === 3) return "text-amber-700 dark:text-amber-600";
-  return "text-zinc-500";
+  if (rank === 1) return "text-amber-800 dark:text-amber-300";
+  if (rank === 2) return "text-zinc-700 dark:text-zinc-300";
+  if (rank === 3) return "text-amber-700 dark:text-amber-400";
+  return "text-zinc-600 dark:text-zinc-300";
 }
 
 function isCurrent(item: RankItem): boolean {
@@ -35,28 +35,11 @@ function onPlay(item?: RankItem) {
   }
 }
 
-function downloadLabel(item: RankItem): string {
-  const state = download.state(item);
-  if (state === "ready") return "已下载";
-  if (state === "queued") return "队列中";
-  return "下载";
-}
-
-function downloadClass(item: RankItem): string {
-  const state = download.state(item);
-  if (state === "ready") return "text-emerald-600 dark:text-emerald-300";
-  if (state === "queued") return "text-amber-600 dark:text-amber-300";
-  return "text-zinc-500";
-}
-
-function onDownload(item: RankItem) {
-  void download.enqueue(item);
-}
 </script>
 
 <template>
   <article
-    class="relative overflow-hidden rounded-3xl"
+    class="relative overflow-hidden rounded-2xl"
     :style="{
       backgroundColor: palette.bg,
       '--hero-hover': palette.hover,
@@ -64,27 +47,30 @@ function onDownload(item: RankItem) {
     }"
   >
     <div aria-hidden="true" class="pointer-events-none absolute inset-0">
-      <img
+      <CoverImage
         v-if="coverUrl"
         :src="coverUrl"
+        :size="500"
+        eager
         alt=""
-        referrerpolicy="no-referrer"
         class="h-full w-full scale-[1.8] object-cover blur-3xl saturate-125"
       />
       <div class="absolute inset-0" :style="{ backgroundColor: palette.overlay }" />
     </div>
-    <div class="relative flex flex-row gap-3 p-4 sm:gap-4 sm:p-6">
+    <div class="relative flex flex-row gap-3 p-4 sm:gap-4">
       <button
         type="button"
-        class="relative h-28 w-28 shrink-0 overflow-hidden rounded-2xl shadow-lg sm:h-36 sm:w-36 sm:rounded-3xl md:h-44 md:w-44"
+        class="relative h-24 w-24 shrink-0 overflow-hidden rounded-xl sm:h-32 sm:w-32 sm:rounded-2xl md:h-36 md:w-36"
         :style="{ backgroundColor: palette.bg }"
         :disabled="!top"
         :aria-label="top ? `播放 ${top.title} · ${top.artist}` : undefined"
         @click="onPlay(top)"
       >
-        <img
-          v-if="top?.cover_url"
+        <CoverImage
+          v-if="top"
           :src="top.cover_url"
+          :size="500"
+          eager
           class="h-full w-full object-cover transition duration-200 hover:-translate-y-0.5"
           :alt="top.title"
         />
@@ -98,8 +84,8 @@ function onDownload(item: RankItem) {
           >
             {{ platformLabel(board.platform) }}
           </span>
-          <span class="truncate text-zinc-600 dark:text-zinc-400">{{ chartShortName(board.name) }}</span>
-          <span class="shrink-0 text-zinc-600 dark:text-zinc-400">Top 5</span>
+          <span class="truncate text-zinc-700 dark:text-zinc-300">{{ chartShortName(board.name) }}</span>
+          <span class="shrink-0 text-zinc-700 dark:text-zinc-300">Top 5</span>
           <span
             v-if="latest?.staleness === 'stale'"
             class="rounded-full bg-amber-400/20 px-2 py-0.5 text-amber-700 dark:text-amber-300"
@@ -124,25 +110,12 @@ function onDownload(item: RankItem) {
               </span>
               <span class="pointer-events-none min-w-0">
                 <span class="block truncate text-sm font-medium">{{ item.title }}</span>
-                <span class="block truncate text-xs text-zinc-500 dark:text-zinc-400">
+                <span class="block truncate text-xs text-zinc-700 dark:text-zinc-300">
                   {{ item.artist }}
                 </span>
               </span>
               <span class="relative z-10 pointer-events-auto">
-                <button
-                  type="button"
-                  class="grid h-8 w-8 shrink-0 place-items-center rounded-full hover:bg-[var(--hero-hover)]"
-                  :class="downloadClass(item)"
-                  :aria-label="downloadLabel(item)"
-                  :title="downloadLabel(item)"
-                  :disabled="download.state(item) !== 'idle'"
-                  @click="onDownload(item)"
-                >
-                  <svg v-if="download.state(item) !== 'ready'" viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                    <path d="M8 2.5v7m0 0 2.5-2.5M8 9.5 5.5 7M3 11.5v1A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                  <span v-else aria-hidden="true">✓</span>
-                </button>
+                <TrackDownloadAction :item="item" subtle />
               </span>
             </div>
           </li>

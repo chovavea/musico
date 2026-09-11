@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, useId, watch } from "vue";
 import type { CatalogChart, CatalogGroup } from "../types";
 
 const props = defineProps<{
@@ -21,7 +21,11 @@ const TOUCH_TOLERANCE = 10;
 const open = ref(false);
 const query = ref("");
 const root = ref<HTMLElement | null>(null);
+const triggerEl = ref<HTMLButtonElement | null>(null);
+const searchEl = ref<HTMLInputElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
+const listboxId = `board-chart-picker-${useId()}`;
+const activeKey = ref("");
 const draggingKey = ref("");
 const insertAt = ref(-1);
 const lifted = ref(false);
@@ -91,6 +95,14 @@ const visibleCharts = computed(() => {
   return ordered.value.filter((chart) => !needle || chart.name.toLowerCase().includes(needle));
 });
 
+const enabledVisibleCharts = computed(() => visibleCharts.value.filter((chart) => chart.playable));
+const activeChart = computed(
+  () =>
+    visibleCharts.value.find((chart) => chart.key === activeKey.value) ??
+    visibleCharts.value.find((chart) => isCurrent(chart.key)) ??
+    null,
+);
+
 type DisplayRow = { type: "ph" } | { type: "chart"; chart: CatalogChart };
 
 const displayRows = computed<DisplayRow[]>(() => {
@@ -108,20 +120,139 @@ const displayRows = computed<DisplayRow[]>(() => {
 function onDocClick(event: MouseEvent) {
   if (lifted.value || Date.now() < ignoreClickUntil.value) return;
   if (!root.value?.contains(event.target as Node)) {
-    open.value = false;
+    void closePicker();
   }
+}
+
+function optionElement(key: string): HTMLElement | null {
+  const options = listEl.value?.querySelectorAll<HTMLElement>("[data-option-key]") ?? [];
+  return [...options].find((option) => option.dataset.optionKey === key) ?? null;
+}
+
+function preferredKey(edge: "first" | "last" | "current" = "current"): string {
+  const charts = enabledVisibleCharts.value;
+  if (!charts.length) return "";
+  if (edge === "first") return charts[0].key;
+  if (edge === "last") return charts[charts.length - 1].key;
+  return charts.find((chart) => isCurrent(chart.key))?.key ?? charts[0].key;
+}
+
+async function focusOption(key: string) {
+  if (!key) return;
+  activeKey.value = key;
+  await nextTick();
+  const option = optionElement(key);
+  option?.focus();
+  option?.scrollIntoView({ block: "nearest" });
+}
+
+async function openPicker(focus: "search" | "first" | "last" | "current" = "search") {
+  open.value = true;
+  activeKey.value = preferredKey(focus === "search" ? "current" : focus);
+  await nextTick();
+  if (focus === "search") {
+    searchEl.value?.focus();
+  } else {
+    await focusOption(activeKey.value);
+  }
+}
+
+async function closePicker(restoreTrigger = false) {
+  open.value = false;
+  query.value = "";
+  activeKey.value = "";
+  if (restoreTrigger) {
+    await nextTick();
+    triggerEl.value?.focus();
+  }
+}
+
+function togglePicker() {
+  if (open.value) {
+    void closePicker();
+  } else {
+    void openPicker("search");
+  }
+}
+
+function onTriggerKeydown(event: KeyboardEvent) {
+  if (event.key === "ArrowDown" || event.key === "Home") {
+    event.preventDefault();
+    void openPicker("first");
+  } else if (event.key === "ArrowUp" || event.key === "End") {
+    event.preventDefault();
+    void openPicker("last");
+  } else if (event.key === "Escape" && open.value) {
+    event.preventDefault();
+    void closePicker(true);
+  }
+}
+
+function onSearchKeydown(event: KeyboardEvent) {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    void focusOption(preferredKey("current"));
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    void focusOption(preferredKey("last"));
+  }
+}
+
+function onPopupKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  void closePicker(true);
 }
 
 function choose(key: string, playable: boolean) {
   if (!playable) return;
   if (lifted.value || moved.value || Date.now() < ignoreClickUntil.value) return;
   emit("select", key);
-  open.value = false;
-  query.value = "";
+  void closePicker(true);
 }
 
 function isCurrent(key: string): boolean {
   return key === props.chartKey;
+}
+
+function optionTabindex(chart: CatalogChart): 0 | -1 {
+  if (!chart.playable) return -1;
+  if (activeKey.value) return activeKey.value === chart.key ? 0 : -1;
+  return preferredKey("current") === chart.key ? 0 : -1;
+}
+
+function onOptionKeydown(chart: CatalogChart, event: KeyboardEvent) {
+  if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    moveChart(chart.key, event.key === "ArrowUp" ? -1 : 1);
+    return;
+  }
+
+  const charts = enabledVisibleCharts.value;
+  if (!charts.length) return;
+  const currentIndex = Math.max(
+    0,
+    charts.findIndex((item) => item.key === chart.key),
+  );
+  let nextKey = "";
+  if (event.key === "ArrowDown") {
+    nextKey = charts[Math.min(currentIndex + 1, charts.length - 1)].key;
+  } else if (event.key === "ArrowUp") {
+    nextKey = charts[Math.max(currentIndex - 1, 0)].key;
+  } else if (event.key === "Home") {
+    nextKey = charts[0].key;
+  } else if (event.key === "End") {
+    nextKey = charts[charts.length - 1].key;
+  } else if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    choose(chart.key, chart.playable);
+    return;
+  } else {
+    return;
+  }
+  event.preventDefault();
+  void focusOption(nextKey);
 }
 
 function layoutTop(el: HTMLElement): number {
@@ -189,7 +320,7 @@ function activateLift(chart: CatalogChart, clientY: number) {
 
 function onRowDown(chart: CatalogChart, event: PointerEvent) {
   if (!canDrag.value || !chart.playable) return;
-  if ((event.target as HTMLElement).closest("input")) return;
+  if ((event.target as HTMLElement).closest("input, [data-no-drag]")) return;
   const row = event.currentTarget as HTMLElement;
   const rect = row.getBoundingClientRect();
   rowHeight.value = rect.height;
@@ -269,6 +400,10 @@ function onWindowUp(event: PointerEvent) {
   if (!didLift) return;
   ignoreClickUntil.value = Date.now() + 400;
   if (!didMove || index < 0 || !key) return;
+  commitReorder(key, index);
+}
+
+function commitReorder(key: string, index: number) {
   const from = ordered.value.findIndex((chart) => chart.key === key);
   if (index === from) return;
   const rest = ordered.value.filter((chart) => chart.key !== key);
@@ -284,6 +419,30 @@ function onWindowUp(event: PointerEvent) {
   emit("reorder", key, next ? next.key : null);
 }
 
+function moveChart(key: string, direction: -1 | 1) {
+  if (!canDrag.value) return;
+  const from = ordered.value.findIndex((chart) => chart.key === key);
+  if (from < 0) return;
+  const target = from + direction;
+  if (target < 0 || target >= ordered.value.length) return;
+  commitReorder(key, target);
+  void nextTick(() => focusOption(key));
+}
+
+function canMove(chart: CatalogChart, direction: -1 | 1): boolean {
+  if (!canDrag.value || !chart.playable) return false;
+  const index = ordered.value.findIndex((item) => item.key === chart.key);
+  return direction < 0 ? index > 0 : index >= 0 && index < ordered.value.length - 1;
+}
+
+function moveActiveChart(direction: -1 | 1) {
+  if (activeChart.value) moveChart(activeChart.value.key, direction);
+}
+
+function canMoveActiveChart(direction: -1 | 1): boolean {
+  return activeChart.value ? canMove(activeChart.value, direction) : false;
+}
+
 watch(
   () => props.groups,
   () => {
@@ -291,6 +450,12 @@ watch(
     saving.value = false;
   },
 );
+
+watch(query, () => {
+  if (!enabledVisibleCharts.value.some((chart) => chart.key === activeKey.value)) {
+    activeKey.value = preferredKey("current");
+  }
+});
 
 onMounted(() => document.addEventListener("click", onDocClick));
 onUnmounted(() => {
@@ -303,28 +468,48 @@ onUnmounted(() => {
 <template>
   <div ref="root" class="relative min-w-0">
     <button
+      ref="triggerEl"
       type="button"
       class="inline-flex min-h-11 max-w-full items-center gap-1 rounded-full px-1 text-left text-lg font-semibold hover:bg-zinc-100 dark:hover:bg-white/10"
       :aria-expanded="open"
-      @click="open = !open"
+      :aria-controls="listboxId"
+      aria-haspopup="listbox"
+      @click="togglePicker"
+      @keydown="onTriggerKeydown"
     >
       <span class="truncate">{{ name }}</span>
-      <span class="text-sm text-zinc-400" aria-hidden="true">▾</span>
+      <svg
+        class="h-4 w-4 shrink-0 text-zinc-400"
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
     </button>
     <div
       v-if="open"
       class="absolute left-0 top-full z-30 mt-1 w-[min(100vw-2rem,22rem)] overflow-hidden rounded-2xl bg-white shadow-xl ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-white/10"
+      @keydown="onPopupKeydown"
     >
       <div class="border-b border-zinc-100 p-2 dark:border-white/10">
         <input
+          ref="searchEl"
           v-model="query"
           type="search"
           placeholder="搜索榜单"
+          aria-label="搜索榜单"
+          :aria-controls="listboxId"
           class="h-11 w-full rounded-full bg-zinc-100 px-3 text-sm outline-none dark:bg-zinc-800"
+          @keydown="onSearchKeydown"
         />
       </div>
       <div
+        :id="listboxId"
         ref="listEl"
+        role="listbox"
+        aria-label="榜单"
+        :aria-busy="saving"
         class="max-h-80 overflow-y-auto px-1 py-1"
         :class="lifted ? 'select-none' : ''"
       >
@@ -332,7 +517,7 @@ onUnmounted(() => {
           <div
             v-for="row in displayRows"
             :key="row.type === 'ph' ? 'ph' : row.chart.key"
-            class="flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm"
+            class="group flex min-h-11 items-center rounded-xl text-sm"
             :data-chart-key="row.type === 'chart' ? row.chart.key : undefined"
             :class="
               row.type === 'ph'
@@ -349,26 +534,74 @@ onUnmounted(() => {
             "
             :style="row.type === 'ph' ? { height: `${rowHeight}px` } : undefined"
             @pointerdown="row.type === 'chart' && onRowDown(row.chart, $event)"
-            @click="row.type === 'chart' && choose(row.chart.key, row.chart.playable)"
           >
             <template v-if="row.type === 'chart'">
-              <span class="min-w-0 truncate">{{ row.chart.name }}</span>
-              <span
-                class="ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset"
-                :class="
-                  isCurrent(row.chart.key)
-                    ? 'bg-white/10 text-zinc-300 ring-white/20 dark:bg-zinc-900/10 dark:text-zinc-500 dark:ring-zinc-900/20'
-                    : 'bg-zinc-100 text-zinc-500 ring-zinc-200/70 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10'
-                "
+              <button
+                type="button"
+                role="option"
+                class="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
+                :data-option-key="row.chart.key"
+                :aria-selected="isCurrent(row.chart.key)"
+                :aria-disabled="!row.chart.playable"
+                aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                :tabindex="optionTabindex(row.chart)"
+                @focus="activeKey = row.chart.key"
+                @click="choose(row.chart.key, row.chart.playable)"
+                @keydown="onOptionKeydown(row.chart, $event)"
               >
-                {{ groupLabelByKey.get(row.chart.key) ?? '' }}
-              </span>
+                <span class="min-w-0 truncate">{{ row.chart.name }}</span>
+                <span
+                  class="ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset"
+                  :class="
+                    isCurrent(row.chart.key)
+                      ? 'bg-white/10 text-zinc-300 ring-white/20 dark:bg-zinc-900/10 dark:text-zinc-500 dark:ring-zinc-900/20'
+                      : 'bg-zinc-100 text-zinc-500 ring-zinc-200/70 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10'
+                  "
+                >
+                  {{ groupLabelByKey.get(row.chart.key) ?? '' }}
+                </span>
+              </button>
             </template>
           </div>
         </TransitionGroup>
         <p v-if="!visibleCharts.length" class="px-3 py-6 text-center text-sm text-zinc-500">没有匹配的榜</p>
       </div>
+      <div
+        v-if="visibleCharts.length"
+        role="toolbar"
+        class="flex items-center justify-end gap-1 border-t border-zinc-100 px-2 py-1 dark:border-white/10"
+        aria-label="榜单排序"
+      >
+        <span class="mr-auto truncate px-1 text-xs text-zinc-500">
+          {{ activeChart ? `排序：${activeChart.name}` : "选择榜单后排序" }}
+        </span>
+        <button
+          type="button"
+          class="rounded-lg p-2 text-zinc-500 outline-none hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-white/10"
+          :disabled="!canMoveActiveChart(-1)"
+          :aria-label="activeChart ? `上移 ${activeChart.name}` : '上移榜单'"
+          @click="moveActiveChart(-1)"
+        >
+          <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="m4 10 4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="rounded-lg p-2 text-zinc-500 outline-none hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-white/10"
+          :disabled="!canMoveActiveChart(1)"
+          :aria-label="activeChart ? `下移 ${activeChart.name}` : '下移榜单'"
+          @click="moveActiveChart(1)"
+        >
+          <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
     </div>
+    <p class="sr-only" aria-live="polite" aria-atomic="true">
+      {{ saving ? "正在保存榜单顺序" : "" }}
+    </p>
     <Teleport to="body">
       <div
         v-if="lifted"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,9 +19,9 @@ def compute_staleness(
     *,
     now: datetime | None = None,
 ) -> Literal["fresh", "stale"]:
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     if updated_at.tzinfo is None:
-        updated_at = updated_at.replace(tzinfo=timezone.utc)
+        updated_at = updated_at.replace(tzinfo=UTC)
     age = (current - updated_at).total_seconds()
     if age <= interval_sec * multiplier:
         return "fresh"

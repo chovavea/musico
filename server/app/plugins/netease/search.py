@@ -6,7 +6,7 @@ import httpx
 
 from app.domain.models import TrackQuery, TrackRef
 
-_SEARCH_URL = "https://music.163.com/api/search/get"
+_SEARCH_URL = "https://music.163.com/api/cloudsearch/pc"
 _HEADERS = {"Referer": "https://music.163.com/"}
 
 
@@ -18,9 +18,9 @@ class NeteaseSearch:
         keyword = f"{query.title} {query.artist}".strip()
         if not keyword:
             return []
-        response = await self._client.get(
+        response = await self._client.post(
             _SEARCH_URL,
-            params={"s": keyword, "type": 1, "limit": query.limit, "offset": 0},
+            data={"s": keyword, "type": 1, "limit": query.limit, "offset": 0},
             headers=_HEADERS,
         )
         response.raise_for_status()

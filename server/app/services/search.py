@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 import time
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -14,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.adapters.persistence.models import DownloadTaskRow, LibraryAssetRow, LibraryTrackRow
 from app.domain.matching import artist_key, is_same_recording, normalize_text
 from app.domain.models import TrackRef
+from app.domain.zh_t2s import fold_traditional
 from app.plugins._registry import PluginRecord, PluginRegistry
 from app.services.preview_telemetry import RATES
 
@@ -85,9 +88,7 @@ class SearchService:
             self._cache.pop(key, None)
 
         records = [
-            record
-            for record in self._registry.plugins.values()
-            if record.search is not None
+            record for record in self._registry.plugins.values() if record.search is not None
         ]
         query_limit = effective_limit
         results = await asyncio.gather(
@@ -127,7 +128,8 @@ class SearchService:
             item["status"] in {"ok", "empty"} for item in platform_status
         )
         cached = _CacheEntry(
-            expires_at=time.monotonic() + (_SUGGEST_TTL_SEC if kind == "suggest" else _FULL_TTL_SEC),
+            expires_at=time.monotonic()
+            + (_SUGGEST_TTL_SEC if kind == "suggest" else _FULL_TTL_SEC),
             query=cleaned,
             kind=kind,
             groups=groups,
@@ -148,7 +150,7 @@ class SearchService:
         from app.domain.models import TrackQuery
 
         found = await record.search.search(TrackQuery(title=query, limit=limit))
-        return [
+        usable = [
             track
             for track in found[:limit]
             if track.platform == record.plugin_id
@@ -156,6 +158,53 @@ class SearchService:
             and track.title.strip()
             and track.artist.strip()
         ]
+        relevant = [track for track in usable if self._query_relevant(query, track)]
+        if relevant:
+            return relevant
+        # Latin-script queries (for example "Jay Chou" for 周杰伦) cannot be
+        # confirmed by substring matching. Keep the provider ranking then.
+        # CJK queries that match nothing should stay empty so unrelated hot
+        # songs are not shown as if they were hits.
+        return usable if self._cross_script_query(query) else []
+
+    @staticmethod
+    def _search_text(value: str) -> str:
+        return fold_traditional(normalize_text(value))
+
+    @staticmethod
+    def _cross_script_query(query: str) -> bool:
+        text = unicodedata.normalize("NFKC", query)
+        has_latin = bool(re.search(r"[A-Za-z]", text))
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", text))
+        return has_latin and not has_cjk
+
+    @staticmethod
+    def _query_relevant(query: str, track: TrackRef) -> bool:
+        """Reject provider fallbacks while retaining title and artist substrings."""
+        normalized_query = SearchService._search_text(query)
+        title = SearchService._search_text(track.title)
+        artist = SearchService._search_text(track.artist)
+        if not normalized_query or not title or not artist:
+            return False
+
+        fields = (title, artist, f"{title}{artist}", f"{artist}{title}")
+        if any(normalized_query in field for field in fields):
+            return True
+
+        raw_terms = re.split(
+            r"[\s\-–—·•|/,_，、]+",
+            unicodedata.normalize("NFKC", query).casefold(),
+        )
+        terms = [term for value in raw_terms if (term := SearchService._search_text(value))]
+        if len(terms) > 1 and all(
+            any(term in field for field in (title, artist)) for term in terms
+        ):
+            return True
+
+        # Compact title+artist queries sometimes carry harmless words around the
+        # metadata. Requiring both fields prevents a short provider fallback from
+        # being accepted merely because its title occurs inside a longer query.
+        return title in normalized_query and artist in normalized_query
 
     @staticmethod
     def _effective_limit(kind: SearchKind, limit: int | None) -> int:

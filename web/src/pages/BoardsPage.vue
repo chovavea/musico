@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
+import AppIcon from "../components/AppIcon.vue";
+import CoverImage from "../components/CoverImage.vue";
+import PageHeader from "../components/PageHeader.vue";
 import { useStalePoll } from "../composables/useStalePoll";
 import { boardTypeLabel, platformLabel, sortedBoards } from "../lib/boards";
 import { formatUpdatedAt } from "../lib/format";
@@ -9,6 +12,7 @@ import type { BoardInfo } from "../types";
 
 const store = useChartsStore();
 useStalePoll();
+const movingId = ref("");
 
 const boards = computed(() => sortedBoards(store.boards));
 
@@ -25,8 +29,14 @@ function updatedOf(board: BoardInfo): string {
   return formatUpdatedAt(latest?.fetched_at ?? latest?.updated_at);
 }
 
-function move(id: string, direction: "up" | "down") {
-  void store.moveBoard(id, direction);
+async function move(id: string, direction: "up" | "down") {
+  if (movingId.value) return;
+  movingId.value = id;
+  try {
+    await store.moveBoard(id, direction);
+  } finally {
+    movingId.value = "";
+  }
 }
 
 onMounted(() => {
@@ -36,16 +46,18 @@ onMounted(() => {
 
 <template>
   <div>
-    <section class="mb-6">
-      <p class="text-sm text-zinc-500">目录</p>
-      <h1 class="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">榜单</h1>
-      <p class="mt-2 max-w-xl text-sm text-zinc-500">
-        右侧上移下移调整顺序，会保存到数据库。点名称仍进入单榜页。
-      </p>
-      <p class="mt-2 text-sm text-zinc-500">共 {{ boards.length }} 张</p>
-    </section>
+    <PageHeader
+      title="榜单管理"
+      eyebrow="目录"
+      description="调整榜单展示顺序，修改会自动保存。点击名称可进入单榜页面。"
+      back-to="/"
+    >
+      <template #meta>
+        <p class="mt-2 text-sm text-secondary">共 {{ boards.length }} 张</p>
+      </template>
+    </PageHeader>
 
-    <p v-if="store.error" class="mb-4 text-sm text-rose-500">{{ store.error }}</p>
+    <p v-if="store.error" role="alert" class="mb-4 text-sm text-rose-600 dark:text-rose-300">{{ store.error }}</p>
 
     <div
       v-if="boards.length"
@@ -56,16 +68,15 @@ onMounted(() => {
         :key="board.id"
         class="grid min-h-11 grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-zinc-100 px-4 py-3 first:border-t-0 dark:border-white/5"
       >
-        <img
-          v-if="coverOf(board)"
+        <CoverImage
           :src="coverOf(board) ?? ''"
+          :size="150"
           :alt="board.name"
           class="h-11 w-11 rounded-xl object-cover"
         />
-        <div v-else class="skel h-11 w-11 rounded-xl" />
         <RouterLink :to="`/charts/${board.id}`" class="min-w-0 hover:underline">
           <p class="truncate font-semibold">{{ board.name }}</p>
-          <p class="truncate text-xs text-zinc-500">
+          <p class="truncate text-xs text-secondary">
             {{ platformLabel(board.platform) }} · {{ boardTypeLabel(board.type) }} ·
             {{ countOf(board) }} 首 · {{ updatedOf(board) }}
           </p>
@@ -74,20 +85,20 @@ onMounted(() => {
           <button
             type="button"
             class="grid h-11 w-11 place-items-center rounded-full text-sm hover:bg-zinc-100 disabled:text-zinc-300 dark:hover:bg-white/10 dark:disabled:text-zinc-700"
-            :disabled="index === 0"
+            :disabled="index === 0 || Boolean(movingId)"
             aria-label="上移"
             @click="move(board.id, 'up')"
           >
-            ↑
+            <AppIcon :name="movingId === board.id ? 'spinner' : 'chevron-up'" :size="18" />
           </button>
           <button
             type="button"
             class="grid h-11 w-11 place-items-center rounded-full text-sm hover:bg-zinc-100 disabled:text-zinc-300 dark:hover:bg-white/10 dark:disabled:text-zinc-700"
-            :disabled="index === boards.length - 1"
+            :disabled="index === boards.length - 1 || Boolean(movingId)"
             aria-label="下移"
             @click="move(board.id, 'down')"
           >
-            ↓
+            <AppIcon :name="movingId === board.id ? 'spinner' : 'chevron-down'" :size="18" />
           </button>
         </div>
       </div>
