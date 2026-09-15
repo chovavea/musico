@@ -7,6 +7,8 @@ import pytest
 from app.domain.models import TrackQuery
 from app.plugins.kugou.search import KugouSearch
 from app.plugins.kugou.search import parse_search_payload as parse_kugou
+from app.plugins.kuwo.search import KuwoSearch
+from app.plugins.kuwo.search import parse_search_payload as parse_kuwo
 from app.plugins.netease.search import NeteaseSearch
 from app.plugins.netease.search import parse_search_payload as parse_netease
 from app.plugins.qqmusic.search import QQMusicSearch, search_payload
@@ -98,6 +100,19 @@ KUGOU_PAYLOAD: dict[str, Any] = {
     },
 }
 
+# Kuwo answers this endpoint with a JavaScript literal instead of JSON, and it
+# escapes an ampersand twice, so the raw body carries `\\\\u0026`.
+KUWO_PAYLOAD = (
+    r"""{'ARTISTPIC':'','HIT':'3856','HITMODE':'song','PN':'0','RN':'3','abslist':["""
+    r"""{'AARTIST':'Jay&nbsp;Chou','ALBUM':'','ALBUMID':'0','ARTIST':'周杰伦',"""
+    r"""'ARTISTID':'336','DURATION':'269','MUSICRID':'MUSIC_51685512',"""
+    r"""'NAME':'晴天&nbsp;(KTV版伴奏)','web_albumpic_short':'120/54/93/1964735275.jpg',"""
+    r"""'web_artistpic_short':'120/s4s56/58/291211030.jpg'},"""
+    r"""{'ARTIST':'周杰伦\\\\u0026五月天','ALBUM':'','DURATION':'787',"""
+    r"""'MUSICRID':'MUSIC_152809941','NAME':'志明与春娇+听妈妈的话','web_albumpic_short':''},"""
+    r"""{'NAME':'no rid','ARTIST':'x'}]}"""
+)
+
 
 def test_netease_search_payload_is_parsed_with_duration_and_album() -> None:
     tracks = parse_netease(NETEASE_PAYLOAD, limit=5)
@@ -136,6 +151,85 @@ def test_kugou_search_payload_is_parsed_with_album_and_duration() -> None:
     assert tracks[1].cover_url == (
         "http://singerimg.kugou.com/uploadpic/softhead/{size}/20241015/a.jpg"
     )
+
+
+def test_kuwo_search_payload_is_parsed_from_the_js_literal() -> None:
+    tracks = parse_kuwo(KUWO_PAYLOAD, limit=5)
+    assert [track.external_id for track in tracks] == ["51685512", "152809941"]
+    assert tracks[0].platform == "kuwo"
+    assert tracks[0].title == "晴天 (KTV版伴奏)"
+    assert tracks[0].artist == "周杰伦"
+    assert tracks[0].duration_ms == 269_000
+    assert tracks[0].cover_url == (
+        "https://img1.kuwo.cn/star/albumcover/120/54/93/1964735275.jpg"
+    )
+    assert tracks[0].official_url == "https://www.kuwo.cn/play_detail/51685512"
+    # Kuwo publishes no album on this endpoint, only for some rows at all.
+    assert tracks[1].artist == "周杰伦&五月天"
+    assert tracks[1].album is None
+    assert tracks[1].cover_url is None
+
+
+def test_kuwo_search_also_reads_a_json_body() -> None:
+    tracks = parse_kuwo(
+        {
+            "abslist": [
+                {"MUSICRID": "MUSIC_646859398", "NAME": "大梦归", "ARTIST": "周深", "DURATION": 229}
+            ]
+        },
+        limit=1,
+    )
+    assert [track.external_id for track in tracks] == ["646859398"]
+    assert tracks[0].duration_ms == 229_000
+
+
+def test_kuwo_search_cover_strips_a_leading_slash() -> None:
+    tracks = parse_kuwo(
+        {
+            "abslist": [
+                {
+                    "MUSICRID": "MUSIC_51685512",
+                    "NAME": "晴天",
+                    "ARTIST": "周杰伦",
+                    "web_albumpic_short": "/120/s4s75/33/1791348220.jpg",
+                }
+            ]
+        },
+        limit=1,
+    )
+    assert tracks[0].cover_url == (
+        "https://img1.kuwo.cn/star/albumcover/120/s4s75/33/1791348220.jpg"
+    )
+
+
+@pytest.mark.parametrize(
+    "short",
+    [
+        "https://img1.kuwo.cn/star/albumcover/120/54/93/1964735275.jpg",
+        "s4s56/58/291211030.jpg",
+        "120/../54/93/1964735275.jpg",
+        "120/54/93/1964735275.jpg?x=1",
+    ],
+)
+def test_kuwo_search_drops_cover_paths_the_proxy_would_reject(short: str) -> None:
+    tracks = parse_kuwo(
+        {
+            "abslist": [
+                {
+                    "MUSICRID": "MUSIC_51685512",
+                    "NAME": "晴天",
+                    "ARTIST": "周杰伦",
+                    "web_albumpic_short": short,
+                }
+            ]
+        },
+        limit=1,
+    )
+    assert tracks[0].cover_url is None
+
+
+def test_kuwo_search_respects_the_limit() -> None:
+    assert len(parse_kuwo(KUWO_PAYLOAD, limit=1)) == 1
 
 
 def test_qq_search_cover_uses_gtimg_cdn() -> None:
@@ -179,6 +273,11 @@ def test_qq_search_tolerates_unexpected_payloads(payload: object) -> None:
 @pytest.mark.parametrize("payload", [None, {}, {"data": {}}, {"data": {"info": "nope"}}])
 def test_kugou_search_tolerates_unexpected_payloads(payload: object) -> None:
     assert parse_kugou(payload, limit=5) == []
+
+
+@pytest.mark.parametrize("payload", [None, {}, "", "not a payload", "['list']"])
+def test_kuwo_search_tolerates_unexpected_payloads(payload: object) -> None:
+    assert parse_kuwo(payload, limit=5) == []
 
 
 def test_qq_search_payload_sends_the_web_client_credentials() -> None:
@@ -243,6 +342,26 @@ async def test_kugou_search_requests_the_v3_endpoint() -> None:
     assert seen[0].headers["referer"] == "https://www.kugou.com/"
 
 
+async def test_kuwo_search_requests_the_legacy_endpoint() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=KUWO_PAYLOAD.encode("utf-8"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await KuwoSearch(client).search(QUERY)
+    assert [track.external_id for track in tracks] == ["51685512", "152809941"]
+    assert seen[0].method == "GET"
+    assert seen[0].url.host == "search.kuwo.cn"
+    assert seen[0].url.path == "/r.s"
+    assert seen[0].url.params["all"] == "我不难过 孙燕姿"
+    assert seen[0].url.params["rn"] == "5"
+    # Without encoding=utf8 Kuwo answers GBK, which would mangle every title.
+    assert seen[0].url.params["encoding"] == "utf8"
+    assert seen[0].headers["referer"] == "https://www.kuwo.cn/"
+
+
 async def test_search_skips_the_network_when_the_title_is_empty() -> None:
     calls = 0
 
@@ -255,4 +374,5 @@ async def test_search_skips_the_network_when_the_title_is_empty() -> None:
         assert await NeteaseSearch(client).search(TrackQuery(title="", artist="")) == []
         assert await QQMusicSearch(client).search(TrackQuery(title="", artist="")) == []
         assert await KugouSearch(client).search(TrackQuery(title="", artist="")) == []
+        assert await KuwoSearch(client).search(TrackQuery(title="", artist="")) == []
     assert calls == 0

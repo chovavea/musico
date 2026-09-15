@@ -9,6 +9,7 @@ import pytest
 from app.domain.models import BoardSpec
 from app.plugins.bilibili.charts import BilibiliCharts
 from app.plugins.kugou.charts import KugouCharts
+from app.plugins.kuwo.charts import KuwoCharts, parse_catalog_page
 from app.plugins.netease.charts import NeteaseCharts
 from app.plugins.qqmusic.charts import QQMusicCharts
 
@@ -70,6 +71,28 @@ class _KugouPagedSongTransport(httpx.AsyncBaseTransport):
         if payload is None:
             return httpx.Response(200, json={"status": 1, "data": {"total": 0, "info": []}})
         return httpx.Response(200, json=payload)
+
+
+class _KuwoBangTransport(httpx.AsyncBaseTransport):
+    def __init__(self, pages: dict[int, dict[str, Any]]) -> None:
+        self._pages = pages
+        self.requested: list[int] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("pn", "0"))
+        self.requested.append(page)
+        payload = self._pages.get(page)
+        if payload is None:
+            return httpx.Response(200, json={"num": "0", "musiclist": []})
+        return httpx.Response(200, json=payload)
+
+
+class _KuwoCatalogTransport(httpx.AsyncBaseTransport):
+    def __init__(self, html: str) -> None:
+        self._html = html
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=self._html)
 
 
 @pytest.mark.asyncio
@@ -338,6 +361,96 @@ async def test_kugou_fetches_every_rank_page(monkeypatch: pytest.MonkeyPatch) ->
     assert [item.rank for item in items] == [1, 2, 4, 5]
     assert transport.requested == [1, 2, 3]
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_kuwo_fixture_skips_bad_row(fixtures_dir: Path) -> None:
+    payload = json.loads((fixtures_dir / "kuwo_bang_song.json").read_text(encoding="utf-8"))
+    client = httpx.AsyncClient(transport=_FixtureTransport(payload))
+    charts = KuwoCharts(client)
+    spec = BoardSpec(
+        id="kuwo_hot",
+        platform="kuwo",
+        name="酷我热歌榜",
+        type="hot",
+        interval_sec=1800,
+        extra={"bang_id": 16},
+    )
+    items = await charts.fetch_board(spec)
+    assert [item.external_id for item in items] == ["624683929", "567247828"]
+    # Kuwo ranks by list position, so a skipped row keeps the slot it had.
+    assert [item.rank for item in items] == [1, 3]
+    assert items[0].title == "山风山风等等我"
+    assert items[0].artist == "万海东"
+    assert items[0].album == "山风山风等等我"
+    assert items[0].duration_ms == 209_000
+    # The bang endpoint publishes no per-song cover, only the chart's artwork.
+    assert items[0].cover_url is None
+    assert items[0].official_url == "https://www.kuwo.cn/play_detail/624683929"
+    assert items[1].artist == "阿图&表妹"
+    assert items[1].duration_ms == 243_000
+    await client.aclose()
+
+
+def _kuwo_bang_row(song_id: str, title: str) -> dict[str, Any]:
+    return {"id": song_id, "name": title, "artist": "A", "album": "B", "song_duration": "210"}
+
+
+@pytest.mark.asyncio
+async def test_kuwo_fetches_every_bang_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.kuwo.charts._PAGE_SIZE", 2)
+    pages = {
+        0: {"num": "5", "musiclist": [_kuwo_bang_row("11", "一"), _kuwo_bang_row("22", "二")]},
+        1: {"num": "5", "musiclist": [{"name": "坏数据"}, _kuwo_bang_row("44", "四")]},
+        2: {"num": "5", "musiclist": [_kuwo_bang_row("55", "五")]},
+    }
+    transport = _KuwoBangTransport(pages)
+    client = httpx.AsyncClient(transport=transport)
+    charts = KuwoCharts(client)
+    spec = BoardSpec(
+        id="kuwo_hot",
+        platform="kuwo",
+        name="酷我热歌榜",
+        type="hot",
+        interval_sec=1800,
+        extra={"bang_id": 16},
+    )
+    items = await charts.fetch_board(spec)
+    assert [item.external_id for item in items] == ["11", "22", "44", "55"]
+    assert [item.rank for item in items] == [1, 2, 4, 5]
+    # Kuwo pages from zero, so the first request carries pn=0.
+    assert transport.requested == [0, 1, 2]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_kuwo_catalog_reads_the_bang_menu(fixtures_dir: Path) -> None:
+    html = (fixtures_dir / "kuwo_rank_page.html").read_text(encoding="utf-8")
+    client = httpx.AsyncClient(transport=_KuwoCatalogTransport(html))
+    catalog = await KuwoCharts(client).list_catalog()
+    assert catalog == [
+        {
+            "name": "官方",
+            "charts": [
+                # `sourceid:g` is resolved from the payload's own arguments.
+                {"key": "16", "name": "酷我热歌榜", "playable": True},
+                {"key": "93", "name": "酷我飙升榜", "playable": True},
+            ],
+        },
+        {"name": "语言", "charts": [{"key": "22", "name": "酷我欧美榜", "playable": True}]},
+    ]
+    await client.aclose()
+
+
+def test_kuwo_catalog_needs_the_rank_page_payload() -> None:
+    assert parse_catalog_page("<html><body>no payload</body></html>") == []
+    # A minified chart id with no matching argument is dropped instead of being
+    # published as an unusable key, so its group disappears with it.
+    payload = (
+        "__NUXT__=(function(g){return {bangMenu:"
+        '[{name:"官方",list:[{sourceid:g,intro:"x",name:"榜",id:"1"}]}]}})("");'
+    )
+    assert parse_catalog_page(payload) == []
 
 
 @pytest.mark.asyncio

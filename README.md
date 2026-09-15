@@ -1,6 +1,6 @@
 # musico
 
-自托管音乐热榜：QQ 音乐热歌榜 + 网易云热歌榜 + 哔哩哔哩音乐热歌榜 + 酷狗音乐榜，并支持通过独立下载源插件保存高规格音频到本地音乐库。下载源只使用其公开、授权的页面或直链，不绕过 DRM 或第三方访问限制。
+自托管音乐热榜：QQ 音乐热歌榜 + 网易云热歌榜 + 哔哩哔哩音乐热歌榜 + 酷狗音乐榜 + 酷我音乐榜，并支持通过独立下载源插件保存高规格音频到本地音乐库。下载源只使用其公开、授权的页面或直链，不绕过 DRM 或第三方访问限制。
 
 改 `configs/boards.yaml`（含 `interval_sec`）后必须**重启容器**，调度间隔不会热更新。
 
@@ -25,7 +25,7 @@ docker tag docker.m.daocloud.io/library/python:3.12-alpine python:3.12-alpine
 ## 搜索
 
 首页顶部搜索框支持输入联想，回车后进入独立搜索结果页。搜索会并行查询已注册的
-`SearchPort` 平台（当前包括 QQ 音乐和网易云音乐），将标题、主歌手和时长相符的同一首歌
+`SearchPort` 平台（当前包括 QQ 音乐、网易云音乐、酷狗和酷我），将标题、主歌手和时长相符的同一首歌
 合并展示；播放和下载默认选择已有曲库或历史可播率更优的平台候选。
 
 接口：
@@ -44,7 +44,7 @@ GET /api/v1/search?q=周杰伦&type=full&limit=20
 cd server
 pip install -e ".[dev]"
 # 需要可用的 PostgreSQL，或先 docker compose up -d postgres
-uvicorn app.main:create_app --factory --reload --port 8080
+uvicorn app.main:create_app --factory --reload --reload-dir . --reload-dir ../configs --port 8080
 
 cd ../web
 npm install
@@ -64,6 +64,8 @@ npm run dev
 哔哩哔哩音乐插件使用其公开的全站音乐榜、音乐详情和官方试听接口；榜单类型写在 `configs/boards.yaml` 的 `extra.list_type` 中（`1` 为热歌榜，`3` 为二创榜），插件会自动选择对应类型的最新一期。哔哩哔哩音乐站点当前没有与 QQ / 网易同形态的匿名关键词搜索接口，因此本次只接入榜单和本平台官方试听，不把普通视频搜索结果冒充为音频歌曲。
 
 酷狗音乐插件使用其公开的榜单目录、榜单歌曲、关键词搜索和匿名播放地址接口，全部走 HTTPS：榜单与搜索走 `mobiles.kugou.com/api/v3`（同一份 API 的 `mobilecdn.kugou.com` 只有 HTTP，证书与域名不匹配，因此不使用），播放地址走 `m.kugou.com/app/i/getSongInfo.php?cmd=playInfo`。榜单 id 写在 `configs/boards.yaml` 的 `extra.rank_id`（`8888` 为 TOP500，其余见榜单目录）；榜单目录按接口返回的 `classify` 分成热门榜 / 地区榜 / 曲风语种 / 特色榜 / 全球转载。酷狗对会员付费曲目**不返回任何试听地址**（`status: 0`、`需要付费`，也没有试听片段），这类曲目按无试听地址处理，交给跨平台试听档和下载源档继续兜底；榜单歌曲接口只给专辑 id 与封面、不给专辑名，因此榜单条目的专辑名为空。
+
+酷我音乐插件使用其公开的榜单歌曲、关键词搜索和匿名播放地址接口，全部走 HTTPS：榜单走 `kbangserver.kuwo.cn/ksong.s`（酷我自己的 PC 页面调用的同一个接口，`pn` 从 0 开始，每页 100 条，接口不给名次字段，名次按返回顺序计算），搜索走 `search.kuwo.cn/r.s`（请求带 `encoding=utf8`，否则回答是 GBK；响应体是单引号 + `&nbsp;` 的 JavaScript 字面量而不是 JSON，插件先按 JSON 解析、失败再按 Python 字面量读），播放地址走 `antiserver.kuwo.cn/anti.s?type=convert_url3`。榜单 id 写在 `configs/boards.yaml` 的 `extra.bang_id`（`16` 为酷我热歌榜，其余见榜单目录）。榜单目录没有匿名 JSON 接口（菜单接口要求 `kw_token` Cookie，本项目不伪造该凭证），因此从 PC 榜单页服务端渲染的 `__NUXT__` 数据里读取，分组沿用酷我的官方 / 特色 / 场景 / 语言 / 全球。两点与其它平台不同：酷我榜单接口不给每首歌的封面，榜单条目按无封面显示（搜索接口的 `web_albumpic_short` 有值时才带封面，封面代理会把路径首段尺寸改成前端请求的尺寸）；酷我对**匿名用户拿不到的曲目不会报错**，而是统一返回同一个 11 秒占位音频（`code: 200` + `588957081.mp3`），插件把该文件视为无试听地址，交给跨平台试听档和下载源档继续兜底，不把占位音频当成本曲试听。
 
 ## 下载兜底（跳转到外部网盘）
 

@@ -96,3 +96,10 @@ def test_live_spec_maps_a_kugou_rank_id_both_ways() -> None:
     assert spec.extra == {"rank_id": 8888}
     assert chart_key_for_spec(spec) == "8888"
 
+
+def test_live_spec_maps_a_kuwo_bang_id_both_ways() -> None:
+    spec = live_spec("kuwo", "16", "酷我热歌榜")
+    assert spec.id == "catalog:kuwo:16"
+    assert spec.extra == {"bang_id": 16}
+    assert chart_key_for_spec(spec) == "16"
+

@@ -22,6 +22,10 @@ from app.plugins.kugou.preview import (
 from app.plugins.kugou.preview import (
     parse_preview_payload as parse_kugou_preview,
 )
+from app.plugins.kuwo.preview import KuwoPreview
+from app.plugins.kuwo.preview import (
+    parse_preview_payload as parse_kuwo_preview,
+)
 from app.plugins.netease.preview import official_outer_url
 from app.plugins.qqmusic.preview import (
     QQMusicPreview,
@@ -95,9 +99,12 @@ def test_preview_host_allowlist() -> None:
     assert host_allowed("upos-sz-mirrorcos.bilivideo.com")
     assert host_allowed("sharefs.kugou.com")
     assert host_allowed("sharefs.tx.kugou.com")
+    assert host_allowed("kw-bj.kuwo.cn")
+    assert host_allowed("antiserver.kuwo.cn")
     assert not host_allowed("evil.example.com")
     assert not host_allowed("qq.com")
     assert not host_allowed("kugou.com.evil.example")
+    assert not host_allowed("kuwo.cn.evil.example")
 
 
 def test_bilibili_detail_payload_parses_official_player_info() -> None:
@@ -326,3 +333,75 @@ async def test_kugou_preview_requests_play_info_with_the_song_hash() -> None:
     assert seen[0].url.params["hash"] == "abc123"
     assert seen[0].headers["referer"] == "https://www.kugou.com/"
     assert info.preview_url == "https://sharefs.kugou.com/2026/track.mp3"
+
+
+def test_kuwo_preview_reads_the_signed_play_url() -> None:
+    info = parse_kuwo_preview(
+        {
+            "code": 200,
+            "msg": "success",
+            "url": "https://kw-bj.kuwo.cn/abc/ny/resource/n3/74/31/1074588829.mp3",
+        }
+    )
+    assert info.preview_url == "https://kw-bj.kuwo.cn/abc/ny/resource/n3/74/31/1074588829.mp3"
+    # The request asks for 128 kbps, so the answer is always the low tier.
+    assert info.quality == "low"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Kuwo reports success even for a track it will not stream to an
+        # anonymous listener: every such id (unknown, paid, region-blocked)
+        # resolves to one tiny 11-second placeholder file.
+        {
+            "code": 200,
+            "msg": "success",
+            "url": "https://kw-bj.kuwo.cn/abc/nf/resource/n1/69/32/588957081.mp3",
+        },
+        {"code": 200, "msg": "success", "url": "https://kw-lv.kuwo.cn/x/588957081.MP3"},
+        {
+            "code": 200,
+            "url": "https://kw-bj.kuwo.cn/abc/nf/resource/n1/69/32/588957081.mp3?token=1",
+        },
+        {"code": 200, "url": "https://kw-lv.kuwo.cn/x/588957081.mp3#frag"},
+        {"code": 200, "url": "https://kw-lv.kuwo.cn/x/588957081.mp3/"},
+        {"code": -1, "msg": "refuse request!", "url": ""},
+        {"code": 200, "msg": "success"},
+        {"code": 200, "url": 42},
+        None,
+    ],
+)
+def test_kuwo_preview_returns_nothing_without_usable_audio(payload: object) -> None:
+    info = parse_kuwo_preview(payload)
+    assert info.preview_url is None
+    assert info.quality is None
+
+
+async def test_kuwo_preview_requests_the_play_url_for_the_song_id() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "msg": "success",
+                "url": "https://kw-lv.kuwo.cn/abc/resource/30106/trackmedia/M500003tXHni0YyhuD.mp3",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        info = await KuwoPreview(client).preview(
+            TrackRef(platform="kuwo", external_id="646859398", title="t", artist="a")
+        )
+    assert seen[0].method == "GET"
+    assert seen[0].url.host == "antiserver.kuwo.cn"
+    assert seen[0].url.path == "/anti.s"
+    assert seen[0].url.params["type"] == "convert_url3"
+    assert seen[0].url.params["rid"] == "MUSIC_646859398"
+    assert seen[0].headers["referer"] == "https://www.kuwo.cn/"
+    assert info.preview_url == (
+        "https://kw-lv.kuwo.cn/abc/resource/30106/trackmedia/M500003tXHni0YyhuD.mp3"
+    )

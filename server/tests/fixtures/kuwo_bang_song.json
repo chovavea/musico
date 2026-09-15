@@ -1,0 +1,45 @@
+{
+  "name": "酷我热歌榜",
+  "leader": "酷我热歌榜",
+  "term": "",
+  "info": "榜单规则：按照歌曲在酷我音乐移动端及PC端登录用户中产生的完整播放、下载量、收藏量、搜播量综合热度进行排名，每日更新",
+  "pic": "http://img1.kuwo.cn/star/mboxAlbum/BangPic/",
+  "pub": "2026-09-15",
+  "timestamp": "1789437068",
+  "num": "3",
+  "v9_pic2": "http://img4.kuwo.cn/star/albumcover/120/s4s75/33/1791348220.jpg",
+  "type": "music",
+  "musiclist": [
+    {
+      "id": "624683929",
+      "name": "山风山风等等我",
+      "artist": "万海东",
+      "artistid": "195793",
+      "album": "山风山风等等我",
+      "albumid": "97652689",
+      "song_duration": "209",
+      "duration": "47",
+      "online": "1",
+      "fpay": "0",
+      "isnew": "1"
+    },
+    {
+      "name": "缺少 id 的行",
+      "artist": "坏数据",
+      "song_duration": "1"
+    },
+    {
+      "id": "567247828",
+      "name": "你有没有真的爱过我",
+      "artist": "阿图&表妹",
+      "artistid": "0",
+      "album": "你有没有真的爱过我",
+      "albumid": "100073279",
+      "song_duration": "243",
+      "duration": "1",
+      "online": "1",
+      "fpay": "1",
+      "isnew": "0"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+id = "kuwo"
+name = "酷我音乐"
+capabilities = ["chart", "preview", "search"]
+
+[config_schema]
+required = ["bang_id"]
+
+[config_schema.types]
+bang_id = "int"

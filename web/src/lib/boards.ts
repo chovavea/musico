@@ -14,6 +14,7 @@ const PLATFORM_SHORT: Record<string, string> = {
   netease: "网易",
   bilibili: "B站",
   kugou: "酷狗",
+  kuwo: "酷我",
 };
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -21,9 +22,10 @@ const PLATFORM_LABEL: Record<string, string> = {
   netease: "网易云",
   bilibili: "哔哩哔哩音乐",
   kugou: "酷狗音乐",
+  kuwo: "酷我音乐",
 };
 
-const NAME_PREFIXES = ["QQ音乐", "网易云音乐", "网易云", "哔哩哔哩音乐", "酷狗音乐"];
+const NAME_PREFIXES = ["QQ音乐", "网易云音乐", "网易云", "哔哩哔哩音乐", "酷狗音乐", "酷我音乐"];
 
 export function platformLabel(id: string): string {
   return PLATFORM_LABEL[id] ?? PLATFORM_SHORT[id] ?? id;

@@ -56,6 +56,16 @@ WEBP = b"RIFF\x04\x00\x00\x00WEBP"
             500,
             "https://singerimg.kugou.com/uploadpic/softhead/500/20241015/abc.jpg",
         ),
+        (
+            "http://img1.kuwo.cn/star/albumcover/120/54/93/1964735275.jpg",
+            150,
+            "https://img1.kuwo.cn/star/albumcover/150/54/93/1964735275.jpg",
+        ),
+        (
+            "https://img4.kuwo.cn/star/albumcover/120/s4s75/33/1791348220.jpg",
+            500,
+            "https://img4.kuwo.cn/star/albumcover/500/s4s75/33/1791348220.jpg",
+        ),
     ],
 )
 def test_rewrite_cover_url_for_each_provider(url: str, size: int, expected: str) -> None:
@@ -81,6 +91,11 @@ def test_rewrite_cover_url_for_each_provider(url: str, size: int, expected: str)
         "https://singerimg.kugou.com/uploadpic/softhead/20241015/abc.jpg",
         "https://singerimg.kugou.com/stdmusic/{size}/abc.jpg",
         "https://singerimg.kugou.com.evil.example/uploadpic/softhead/{size}/abc.jpg",
+        "https://img1.kuwo.cn/not-albumcover/120/abc.jpg",
+        "https://img1.kuwo.cn/star/albumcover/abc/def.jpg",
+        "https://img5.kuwo.cn/star/albumcover/120/abc.jpg",
+        "https://img1.kuwo.cn.evil.example/star/albumcover/120/abc.jpg",
+        "https://kw-bj.kuwo.cn/star/albumcover/120/abc.jpg",
         f"https://p1.music.126.net/{'a' * 2050}.jpg",
     ],
 )
