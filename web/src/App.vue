@@ -66,7 +66,7 @@ function scheduleSuggestionSearch() {
   searchRequestNo += 1;
   activeSuggestion.value = -1;
   const query = searchQuery.value.trim();
-  if (query.length < 2) {
+  if (!query) {
     suggestions.value = [];
     suggestionsError.value = "";
     suggestionsLoading.value = false;
@@ -141,7 +141,7 @@ function onDocumentKey(event: KeyboardEvent) {
 
 function submitSearch() {
   const query = searchQuery.value.trim();
-  if (query.length < 2) return;
+  if (!query) return;
   closeSearchPanel();
   void router.push({ name: "search", query: { q: query } });
 }
@@ -288,7 +288,7 @@ onUnmounted(() => {
               <AppIcon name="search" :size="24" />
             </button>
             <div
-              v-if="searchOpen && (suggestionsLoading || suggestionsError || suggestions.length || searchQuery.trim().length >= 2)"
+              v-if="searchOpen && (suggestionsLoading || suggestionsError || suggestions.length || searchQuery.trim().length >= 1)"
               id="global-search-suggestions"
               class="absolute right-0 top-full z-30 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl bg-white shadow-xl ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
             >

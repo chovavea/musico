@@ -9,26 +9,39 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import and_, or_, select
+import structlog
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.adapters.persistence.models import DownloadTaskRow, LibraryAssetRow, LibraryTrackRow
-from app.domain.matching import artist_key, is_same_recording, normalize_text
+from app.domain.matching import (
+    folded_artist_names,
+    is_same_recording,
+    normalize_text,
+    title_match_key,
+)
 from app.domain.models import TrackRef
 from app.domain.zh_t2s import fold_traditional
 from app.plugins._registry import PluginRecord, PluginRegistry
 from app.services.preview_telemetry import RATES
 
+log = structlog.get_logger(__name__)
+
 SearchKind = Literal["suggest", "full"]
 
-MIN_QUERY_LENGTH = 2
+MIN_QUERY_LENGTH = 1
 MAX_QUERY_LENGTH = 200
 SUGGEST_LIMIT = 5
-FULL_LIMIT = 20
+FULL_LIMIT = 100
+MAX_LIMIT = 100
 _CACHE_MAX_ITEMS = 128
 _SUGGEST_TTL_SEC = 20.0
 _FULL_TTL_SEC = 45.0
+# Ceiling for one fan-out. Platforms answer in ~0.25-0.8 s, so 2 s leaves roughly
+# 2.5x headroom while a hung provider cannot hold the whole search (and the
+# browser) for the 15 s per-request timeout.
+_SEARCH_BUDGET_SEC = 2.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +65,27 @@ class _CacheEntry:
     groups: list[_SearchGroup]
     platforms: list[dict[str, Any]]
     partial: bool
+
+
+def _merge_keys(track: TrackRef) -> tuple[str, ...]:
+    """Bucket keys a track can be merged through.
+
+    Every pair ``is_same_recording`` accepts shares at least one of these keys:
+    an identical ISRC, or the same (繁简 folded) title plus one artist name the
+    two tracks have in common. The title alone would not be enough: a popular
+    single comes back as hundreds of same-titled rows from different artists,
+    and comparing all of them made the merge quadratic again (~640 ms for 322
+    candidates against ~9 ms with the artist in the key).
+    """
+    keys: list[str] = []
+    if track.isrc:
+        keys.append(f"isrc:{track.isrc.casefold()}")
+    title = title_match_key(track.title)
+    if title:
+        keys.extend(
+            f"title:{title}|artist:{name}" for name in folded_artist_names(track.artist)
+        )
+    return tuple(keys)
 
 
 class SearchService:
@@ -91,25 +125,54 @@ class SearchService:
             record for record in self._registry.plugins.values() if record.search is not None
         ]
         query_limit = effective_limit
-        results = await asyncio.gather(
-            *(self._search_record(record, cleaned, query_limit) for record in records),
-            return_exceptions=True,
-        )
+        attempts = [
+            (record, asyncio.create_task(self._search_record(record, cleaned, query_limit)))
+            for record in records
+        ]
+        if attempts:
+            await self._await_platforms([task for _, task in attempts])
 
         platform_status: list[dict[str, Any]] = []
         candidates: list[_SearchCandidate] = []
-        for record, result in zip(records, results, strict=True):
-            if isinstance(result, BaseException):
+        for record, task in attempts:
+            # Membership in wait()'s pending set is not the same as "timed out":
+            # cancel() is ignored once a task has a result, so a platform that
+            # finished its last await just as the budget ended must still count.
+            if not task.done() or task.cancelled():
+                log.warning(
+                    "search_platform_timeout",
+                    platform=record.plugin_id,
+                    budget_sec=_SEARCH_BUDGET_SEC,
+                )
                 platform_status.append(
                     {
                         "id": record.plugin_id,
                         "name": record.name,
                         "status": "error",
+                        "reason": "timeout",
                         "result_count": 0,
                     }
                 )
                 continue
-            found = result
+            error = task.exception()
+            if error is not None:
+                log.warning(
+                    "search_platform_failed",
+                    platform=record.plugin_id,
+                    error_type=type(error).__name__,
+                    error=str(error),
+                )
+                platform_status.append(
+                    {
+                        "id": record.plugin_id,
+                        "name": record.name,
+                        "status": "error",
+                        "reason": "error",
+                        "result_count": 0,
+                    }
+                )
+                continue
+            found = task.result()
             candidates.extend(
                 _SearchCandidate(track=track, search_rank=index)
                 for index, track in enumerate(found)
@@ -136,8 +199,28 @@ class SearchService:
             platforms=platform_status,
             partial=partial,
         )
-        self._store_cache(key, cached)
+        # A platform that ran out of budget is about to recover, so its absence
+        # must not be remembered: caching it would hide that platform for the
+        # whole TTL and the user's own retry could not bring it back.
+        if not any(item.get("reason") == "timeout" for item in platform_status):
+            self._store_cache(key, cached)
         return await self._payload_from_groups(cached)
+
+    @staticmethod
+    async def _await_platforms(
+        tasks: list[asyncio.Task[list[TrackRef]]],
+    ) -> None:
+        """Wait for the fan-out, up to a budget, then cancel whatever is still open.
+
+        ``asyncio.gather`` would either wait forever or throw away the platforms
+        that already answered. Timed-out tasks are cancelled; a task that still
+        produces a result is kept by the caller via ``task.cancelled()``.
+        """
+        _, pending = await asyncio.wait(tasks, timeout=_SEARCH_BUDGET_SEC)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _search_record(
         self,
@@ -209,13 +292,21 @@ class SearchService:
     @staticmethod
     def _effective_limit(kind: SearchKind, limit: int | None) -> int:
         default = SUGGEST_LIMIT if kind == "suggest" else FULL_LIMIT
-        maximum = SUGGEST_LIMIT if kind == "suggest" else FULL_LIMIT
         if limit is None:
             return default
-        return max(1, min(int(limit), maximum))
+        return max(1, min(int(limit), MAX_LIMIT))
 
     def _merge_tracks(self, candidates: list[_SearchCandidate]) -> list[_SearchGroup]:
+        """Group equivalent recordings without comparing every pair.
+
+        Candidates are indexed by :func:`_merge_keys`, so a candidate is only
+        compared against groups sharing a key. ``is_same_recording`` still makes
+        the final call and the earliest matching group wins, which keeps the
+        partition — and therefore the ordering — identical to an all-pairs scan
+        while the work stays close to linear.
+        """
         groups: list[_SearchGroup] = []
+        indexed: dict[str, list[tuple[int, _SearchGroup]]] = {}
         seen: set[tuple[str, str]] = set()
         for candidate in candidates:
             track = candidate.track
@@ -223,34 +314,38 @@ class SearchService:
             if identity in seen:
                 continue
             seen.add(identity)
-            matching = next(
-                (
-                    group
-                    for group in groups
-                    if any(
-                        existing.track.platform != track.platform
-                        and is_same_recording(existing.track, track)
-                        for existing in group.candidates
-                    )
-                ),
-                None,
-            )
-            if matching is None:
-                groups.append(
-                    _SearchGroup(
-                        candidates=[candidate],
-                        first_rank=candidate.search_rank,
-                        first_platform=track.platform,
-                    )
+            keys = _merge_keys(track)
+            matches = [
+                (index, group)
+                for key in keys
+                for index, group in indexed.get(key, ())
+                if any(
+                    existing.track.platform != track.platform
+                    and is_same_recording(existing.track, track)
+                    for existing in group.candidates
                 )
-            else:
-                matching.candidates.append(candidate)
-                if candidate.search_rank < matching.first_rank or (
-                    candidate.search_rank == matching.first_rank
-                    and track.platform < matching.first_platform
+            ]
+            if matches:
+                index, group = min(matches, key=lambda item: item[0])
+                group.candidates.append(candidate)
+                if candidate.search_rank < group.first_rank or (
+                    candidate.search_rank == group.first_rank
+                    and track.platform < group.first_platform
                 ):
-                    matching.first_rank = candidate.search_rank
-                    matching.first_platform = track.platform
+                    group.first_rank = candidate.search_rank
+                    group.first_platform = track.platform
+            else:
+                index = len(groups)
+                group = _SearchGroup(
+                    candidates=[candidate],
+                    first_rank=candidate.search_rank,
+                    first_platform=track.platform,
+                )
+                groups.append(group)
+            for key in keys:
+                entries = indexed.setdefault(key, [])
+                if all(entry is not group for _, entry in entries):
+                    entries.append((index, group))
         groups.sort(key=lambda group: (group.first_rank, group.first_platform))
         return groups
 
@@ -335,23 +430,29 @@ class SearchService:
     ) -> dict[tuple[str, str], dict[str, Any]]:
         if not tracks:
             return {}
-        filters = [
-            and_(
-                LibraryTrackRow.normalized_title == normalize_text(track.title),
-                LibraryTrackRow.normalized_artist == artist_key(track.artist),
-            )
-            for track in tracks
-        ]
         try:
             async with self._session_factory() as session:
-                result = await session.execute(select(LibraryTrackRow).where(or_(*filters)))
+                result = await session.execute(select(LibraryTrackRow))
                 rows = result.scalars().all()
                 if not rows:
                     return {}
+                # Equality on stored (unfolded) keys misses 繁/简 and ISRC-only
+                # pairs; is_same_recording already folds, so match in Python.
+                matched_rows: list[Any] = []
+                seen_ids: set[str] = set()
+                for track in tracks:
+                    matched = self._matching_library_track(track, rows)
+                    if matched is None or matched.id in seen_ids:
+                        continue
+                    seen_ids.add(matched.id)
+                    matched_rows.append(matched)
+                if not matched_rows:
+                    return {}
+                matched_ids = [row.id for row in matched_rows]
                 assets_result = await session.execute(
                     select(LibraryAssetRow)
                     .where(
-                        LibraryAssetRow.library_track_id.in_([row.id for row in rows]),
+                        LibraryAssetRow.library_track_id.in_(matched_ids),
                         LibraryAssetRow.status == "ready",
                     )
                     .order_by(LibraryAssetRow.downloaded_at.desc().nullslast())
@@ -361,7 +462,7 @@ class SearchService:
                     assets.setdefault(asset.library_track_id, asset)
                 task_result = await session.execute(
                     select(DownloadTaskRow).where(
-                        DownloadTaskRow.library_track_id.in_([row.id for row in rows]),
+                        DownloadTaskRow.library_track_id.in_(matched_ids),
                         DownloadTaskRow.status.in_(
                             ["resolving", "queued", "downloading", "retrying"]
                         ),
@@ -371,7 +472,7 @@ class SearchService:
         except SQLAlchemyError:
             return {}
 
-        return self._annotate_tracks(tracks, rows, assets, tasks)
+        return self._annotate_tracks(tracks, matched_rows, assets, tasks)
 
     @classmethod
     def _annotate_tracks(

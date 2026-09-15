@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import PageHeader from "../components/PageHeader.vue";
 import SearchResultRow from "../components/SearchResultRow.vue";
 import { isAbortError, searchTracks } from "../api";
+import {
+  SEARCH_PAGE_SIZE,
+  SEARCH_SENTINEL_MARGIN_PX,
+  nextVisibleCount,
+  sentinelNeedsMore,
+} from "../lib/search";
 import type { SearchPayload } from "../types";
 
 const route = useRoute();
@@ -14,6 +20,7 @@ const error = ref("");
 let requestNo = 0;
 let controller: AbortController | null = null;
 const selectedPlatform = ref("all");
+const visibleCount = ref(SEARCH_PAGE_SIZE);
 
 const normalizedQuery = computed(() => String(route.query.q ?? "").trim());
 const hasPlatformError = computed(() =>
@@ -29,6 +36,52 @@ const visibleItems = computed(() => {
     item.platforms.some((source) => source.platform === selectedPlatform.value),
   );
 });
+const pagedItems = computed(() => visibleItems.value.slice(0, visibleCount.value));
+const hasMore = computed(() => visibleCount.value < visibleItems.value.length);
+const countLabel = computed(() => {
+  const total = visibleItems.value.length;
+  if (!total) return "没有找到相关歌曲";
+  return hasMore.value
+    ? `已显示 ${pagedItems.value.length} / ${total} 首相关歌曲`
+    : `显示 ${total} 首相关歌曲`;
+});
+
+const sentinel = ref<HTMLElement | null>(null);
+let observer: IntersectionObserver | null = null;
+
+let filling = false;
+
+async function fillVisible() {
+  if (filling || !hasMore.value) return;
+  filling = true;
+  try {
+    while (hasMore.value) {
+      const element = sentinel.value;
+      if (!element) break;
+      if (!sentinelNeedsMore(element.getBoundingClientRect().top, window.innerHeight)) break;
+      visibleCount.value = nextVisibleCount(visibleCount.value, visibleItems.value.length);
+      await nextTick();
+    }
+  } finally {
+    filling = false;
+  }
+}
+
+function connectObserver() {
+  observer?.disconnect();
+  observer = null;
+  const element = sentinel.value;
+  if (!element) return;
+  observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) void fillVisible();
+  }, { rootMargin: `${SEARCH_SENTINEL_MARGIN_PX}px 0px` });
+  observer.observe(element);
+}
+
+watch([hasMore, sentinel, visibleCount], () => connectObserver(), { flush: "post" });
+watch(selectedPlatform, () => {
+  visibleCount.value = SEARCH_PAGE_SIZE;
+});
 
 async function load() {
   const currentQuery = normalizedQuery.value;
@@ -37,16 +90,17 @@ async function load() {
   payload.value = null;
   error.value = "";
   selectedPlatform.value = "all";
+  visibleCount.value = SEARCH_PAGE_SIZE;
   loading.value = false;
   controller?.abort();
   controller = null;
-  if (currentQuery.length < 2) return;
+  if (!currentQuery) return;
 
   loading.value = true;
   const currentController = new AbortController();
   controller = currentController;
   try {
-    const response = await searchTracks(currentQuery, "full", 20, currentController.signal);
+    const response = await searchTracks(currentQuery, "full", 100, currentController.signal);
     if (currentRequest !== requestNo) return;
     if (response.code !== 0) {
       error.value = response.msg || "搜索失败";
@@ -72,7 +126,10 @@ function retry() {
 onMounted(() => {
   void load();
 });
-onUnmounted(() => controller?.abort());
+onUnmounted(() => {
+  controller?.abort();
+  observer?.disconnect();
+});
 
 watch(
   () => route.query.q,
@@ -114,7 +171,7 @@ watch(
 
     <template v-else-if="payload">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-secondary">
-        <span>{{ visibleItems.length ? `显示 ${visibleItems.length} 首相关歌曲` : "没有找到相关歌曲" }}</span>
+        <span>{{ countLabel }}</span>
         <span v-if="hasPlatformError && hasSuccessfulPlatform" class="text-amber-600 dark:text-amber-400">
           部分平台暂时不可用
         </span>
@@ -151,7 +208,7 @@ watch(
         v-if="visibleItems.length"
         class="divide-y divide-zinc-100 overflow-hidden rounded-2xl bg-white ring-1 ring-zinc-200/80 dark:divide-white/5 dark:bg-zinc-900 dark:ring-white/10"
       >
-        <SearchResultRow v-for="result in visibleItems" :key="`${result.platform}:${result.external_id}`" :result="result" />
+        <SearchResultRow v-for="result in pagedItems" :key="`${result.platform}:${result.external_id}`" :result="result" />
       </div>
       <div
         v-else
@@ -159,13 +216,14 @@ watch(
       >
         换个歌曲名或歌手试试
       </div>
+      <div v-if="hasMore" ref="sentinel" class="h-4" aria-hidden="true" />
     </template>
 
     <div
-      v-else-if="query.length < 2"
+      v-else-if="!query"
       class="rounded-2xl bg-white px-4 py-12 text-center text-sm text-secondary ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
     >
-      至少输入 2 个字符开始搜索
+      至少输入 1 个字符开始搜索
     </div>
   </section>
 </template>

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { useHealthStore } from "../stores/health";
-import { useThemeStore } from "../stores/theme";
+import { useThemeStore, type StyleThemeId } from "../stores/theme";
 import { useDownloadsStore } from "../stores/downloads";
 import AppIcon from "./AppIcon.vue";
 
@@ -21,6 +21,15 @@ const statusLabel = computed(() => {
   if (status === "degraded") return "降级";
   if (status === "starting") return "启动中";
   return "读取中";
+});
+
+const styleIndicator = computed(() => {
+  const count = theme.styleThemes.length;
+  const index = theme.styleThemes.findIndex((item) => item.id === theme.styleTheme);
+  return {
+    left: `calc(3px + ${Math.max(index, 0)} * ((100% - 6px) / ${count}))`,
+    width: `calc((100% - 6px) / ${count})`,
+  };
 });
 
 function onDocClick(event: MouseEvent) {
@@ -42,6 +51,10 @@ function choose(mode: "system" | "light" | "dark") {
   } else {
     theme.setDark(mode === "dark");
   }
+}
+
+function chooseStyle(id: StyleThemeId) {
+  theme.setStyleTheme(id);
 }
 
 function toggle() {
@@ -173,6 +186,31 @@ onUnmounted(() => {
             @click="choose('dark')"
           >
             深色
+          </button>
+        </div>
+      </div>
+      <div class="flex h-11 items-center gap-2 px-2">
+        <span class="shrink-0 text-sm">主题</span>
+        <div
+          class="relative ml-auto grid min-w-0 rounded-full bg-zinc-100 p-[3px] dark:bg-zinc-800"
+          :style="{ gridTemplateColumns: `repeat(${theme.styleThemes.length}, minmax(0, 1fr))` }"
+          role="group"
+          aria-label="页面样式主题"
+        >
+          <span
+            class="pointer-events-none absolute top-[3px] bottom-[3px] rounded-full bg-white ring-1 ring-black/[0.04] transition-[left] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] dark:bg-zinc-600 dark:ring-white/10"
+            :style="styleIndicator"
+          />
+          <button
+            v-for="item in theme.styleThemes"
+            :key="item.id"
+            type="button"
+            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-xs"
+            :class="theme.styleTheme === item.id ? 'font-medium text-zinc-900 dark:text-white' : 'text-zinc-500 dark:text-zinc-400'"
+            :aria-pressed="theme.styleTheme === item.id"
+            @click="chooseStyle(item.id)"
+          >
+            {{ item.name }}
           </button>
         </div>
       </div>

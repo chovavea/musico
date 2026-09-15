@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -12,6 +13,10 @@ _COVER_CDN = "https://y.gtimg.cn/music/photo_new"
 # ct/cv are sent by the y.qq.com web client; older values make the API answer
 # with an empty song list for the same query.
 _COMM = {"ct": "19", "cv": "1859", "uin": "0", "format": "json"}
+# DoSearchForQQMusicDesktop silently answers with an empty song list once
+# num_per_page passes 60 (verified for 61..100), which is why a 100-item search
+# used to come back empty; larger limits are paged instead.
+_MAX_PAGE_SIZE = 60
 
 
 class QQMusicSearch:
@@ -22,16 +27,73 @@ class QQMusicSearch:
         keyword = f"{query.title} {query.artist}".strip()
         if not keyword:
             return []
+        page_size = min(query.limit, _MAX_PAGE_SIZE)
+        # Pages do not depend on each other, so they are requested together: one
+        # round trip instead of one per page.
+        payloads = await asyncio.gather(
+            *(
+                self._request(keyword, query.limit, page)
+                for page in range(1, -(-query.limit // page_size) + 1)
+            ),
+            return_exceptions=True,
+        )
+        return _tracks_from_pages(payloads, limit=query.limit, page_size=page_size)
+
+    async def _request(self, keyword: str, limit: int, page: int) -> Any:
         response = await self._client.post(
             _SEARCH_URL,
-            json=search_payload(keyword, query.limit),
+            json=search_payload(keyword, limit, page=page),
             headers=_HEADERS,
         )
         response.raise_for_status()
-        return parse_search_payload(response.json(), limit=query.limit)
+        payload = response.json()
+        _check_status(payload)
+        return payload
 
 
-def search_payload(keyword: str, limit: int) -> dict[str, Any]:
+def _tracks_from_pages(payloads: list[Any], *, limit: int, page_size: int) -> list[TrackRef]:
+    """Keep successful pages when a later page is throttled or cancelled."""
+    errors: list[BaseException] = []
+    tracks: list[TrackRef] = []
+    seen: set[str] = set()
+    saw_success = False
+    for payload in payloads:
+        if isinstance(payload, BaseException):
+            errors.append(payload)
+            continue
+        saw_success = True
+        found = parse_search_payload(payload, limit=limit - len(tracks))
+        added = 0
+        for track in found:
+            if track.external_id in seen:
+                continue
+            seen.add(track.external_id)
+            tracks.append(track)
+            added += 1
+        # A short page means the result set is exhausted, so the pages behind
+        # it must not be appended; a page with nothing new means the API
+        # repeated itself and the rest is worthless.
+        if added == 0 or len(found) < page_size:
+            break
+    if not saw_success and errors:
+        raise errors[0]
+    return tracks
+
+
+def _check_status(payload: Any) -> None:
+    """Reject a throttled response instead of reporting it as no matches.
+    The API answers HTTP 200 with ``req_1.code = 2001`` and an empty song list
+    while it throttles a client; a genuine miss is ``code = 0`` with an empty
+    list. Treating the two the same hid the throttling behind an "empty"
+    platform status.
+    """
+    req = payload.get("req_1") if isinstance(payload, dict) else None
+    code = req.get("code") if isinstance(req, dict) else None
+    if isinstance(code, int) and code != 0:
+        raise ValueError(f"qqmusic search rejected the request: code={code}")
+
+
+def search_payload(keyword: str, limit: int, *, page: int = 1) -> dict[str, Any]:
     return {
         "comm": dict(_COMM),
         "req_1": {
@@ -39,8 +101,8 @@ def search_payload(keyword: str, limit: int) -> dict[str, Any]:
             "method": "DoSearchForQQMusicDesktop",
             "param": {
                 "query": keyword,
-                "num_per_page": limit,
-                "page_num": 1,
+                "num_per_page": min(limit, _MAX_PAGE_SIZE),
+                "page_num": page,
                 "search_type": 0,
                 "grp": 1,
             },

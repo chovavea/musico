@@ -5,6 +5,7 @@ import unicodedata
 from hashlib import sha256
 
 from app.domain.models import TrackRef
+from app.domain.zh_t2s import fold_traditional
 
 
 def normalize_text(value: str | None) -> str:
@@ -17,6 +18,21 @@ def normalize_text(value: str | None) -> str:
 def artist_key(value: str | None) -> str:
     artists = re.split(r"\s*(?:/|,|&|和|、|feat\.?|ft\.?)\s*", value or "", flags=re.I)
     return normalize_text(artists[0] if artists else value)
+
+
+def title_match_key(value: str | None) -> str:
+    """Comparison key for titles, with traditional characters folded to simplified.
+
+    ``normalize_text`` stays unfolded because it also builds the stored
+    ``normalized_title``/``identity_key`` values; folding here keeps the same
+    recording written as 繁体 and 简体 comparable without a data migration.
+    """
+    return fold_traditional(normalize_text(value))
+
+
+def artist_match_key(value: str | None) -> str:
+    """Artist comparison key; folds 繁/简 so either script still matches."""
+    return fold_traditional(artist_key(value))
 
 
 _ASCII_VERSION_MARKERS = ("live", "remix", "instrumental", "acoustic", "unplugged")
@@ -35,7 +51,7 @@ _CJK_VERSION_MARKERS = (
 
 def version_markers(value: str | None) -> frozenset[str]:
     """Return the version words that mark a recording as a different edit."""
-    text = unicodedata.normalize("NFKC", value or "").casefold()
+    text = fold_traditional(unicodedata.normalize("NFKC", value or "").casefold())
     found = {marker for marker in _CJK_VERSION_MARKERS if marker in text}
     found.update(
         marker
@@ -62,7 +78,17 @@ def artist_names(value: str | None) -> set[str]:
 
 
 def artists_overlap(left: str | None, right: str | None) -> bool:
-    return bool(artist_names(left) & artist_names(right))
+    return bool(folded_artist_names(left) & folded_artist_names(right))
+
+
+def folded_artist_names(value: str | None) -> set[str]:
+    """Individual artist names, 繁简 folded, used to score artist overlap.
+
+    Two tracks can only be the same recording when they share at least one of
+    these names, which is also what lets the search merge bucket by
+    (title, artist name) instead of by title alone.
+    """
+    return {fold_traditional(name) for name in artist_names(value)}
 
 
 def is_cross_platform_match(origin: TrackRef, candidate: TrackRef, *, min_score: float) -> bool:
@@ -82,9 +108,9 @@ def is_cross_platform_match(origin: TrackRef, candidate: TrackRef, *, min_score:
 def track_match_score(left: TrackRef, right: TrackRef) -> float:
     if left.isrc and right.isrc and left.isrc.casefold() == right.isrc.casefold():
         return 1.0
-    if normalize_text(left.title) != normalize_text(right.title):
+    if title_match_key(left.title) != title_match_key(right.title):
         return 0.0
-    if artist_key(left.artist) != artist_key(right.artist):
+    if artist_match_key(left.artist) != artist_match_key(right.artist):
         return 0.0
     if left.duration_ms and right.duration_ms:
         delta = abs(left.duration_ms - right.duration_ms)
@@ -109,14 +135,14 @@ def is_same_recording(left: TrackRef, right: TrackRef) -> bool:
         return True
     if version_variant_conflict(left, right) or version_variant_conflict(right, left):
         return False
-    if normalize_text(left.title) != normalize_text(right.title):
+    if title_match_key(left.title) != title_match_key(right.title):
         return False
     if not artists_overlap(left.artist, right.artist):
         return False
     if left.duration_ms and right.duration_ms:
         if abs(left.duration_ms - right.duration_ms) > 5_000:
             return False
-    return artist_key(left.artist) == artist_key(right.artist) and track_match_score(
+    return artist_match_key(left.artist) == artist_match_key(right.artist) and track_match_score(
         left, right
     ) >= 0.9
 

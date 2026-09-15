@@ -5,10 +5,57 @@ import uuid
 from collections.abc import Awaitable, Callable
 
 import structlog
+from starlette.datastructures import Headers
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware, GZipResponder, IdentityResponder
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Starlette 1.4 only skips text/event-stream. Audio previews, covers and library
+# files would otherwise be gzipped, which drops Content-Length and breaks Range.
+GZIP_EXCLUDED_CONTENT_TYPE_PREFIXES = (
+    "text/event-stream",
+    "audio/",
+    "video/",
+    "image/",
+    "application/octet-stream",
+    "binary/octet-stream",
+)
+
+
+class _ExcludingGZipResponder(GZipResponder):
+    async def send_with_compression(self, message: Message) -> None:
+        if message["type"] == "http.response.start":
+            await super().send_with_compression(message)
+            headers = Headers(raw=self.initial_message["headers"])
+            content_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            self.content_type_is_excluded = content_type.startswith(
+                GZIP_EXCLUDED_CONTENT_TYPE_PREFIXES
+            ) or int(self.initial_message.get("status", 200)) == 206
+            return
+        await super().send_with_compression(message)
+
+
+class ExcludingGZipMiddleware(GZipMiddleware):
+    """Compress JSON API bodies; leave media streams and 206 ranges uncompressed."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        if "gzip" in headers.get("Accept-Encoding", ""):
+            responder: ASGIApp = _ExcludingGZipResponder(
+                self.app,
+                self.minimum_size,
+                compresslevel=self.compresslevel,
+                thread_minimum_size=self.thread_minimum_size,
+            )
+        else:
+            responder = IdentityResponder(self.app, self.minimum_size)
+        await responder(scope, receive, send)
+
 
 
 def _request_token_matches(request: Request, expected: str) -> bool:

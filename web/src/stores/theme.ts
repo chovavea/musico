@@ -1,6 +1,11 @@
 import { defineStore } from "pinia";
 
 const STORAGE_KEY = "musico-theme";
+const STYLE_STORAGE_KEY = "musico-style-theme";
+
+export const STYLE_THEMES = [{ id: "minimal", name: "极简" }] as const;
+export type StyleThemeId = (typeof STYLE_THEMES)[number]["id"];
+const DEFAULT_STYLE_THEME: StyleThemeId = "minimal";
 
 function systemPrefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -13,6 +18,15 @@ function readStoredTheme(): boolean | null {
   return null;
 }
 
+function isStyleThemeId(value: string | null): value is StyleThemeId {
+  return STYLE_THEMES.some((item) => item.id === value);
+}
+
+function readStoredStyleTheme(): StyleThemeId | null {
+  const saved = localStorage.getItem(STYLE_STORAGE_KEY);
+  return isStyleThemeId(saved) ? saved : null;
+}
+
 function updateThemeColor(dark: boolean): void {
   document
     .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
@@ -23,13 +37,21 @@ export const useThemeStore = defineStore("theme", {
   state: () => ({
     dark: true,
     preference: "system" as "system" | "light" | "dark",
+    styleTheme: DEFAULT_STYLE_THEME as StyleThemeId,
     systemListenerBound: false,
   }),
+  getters: {
+    styleThemes: () => STYLE_THEMES,
+  },
   actions: {
     apply(persist = true) {
       document.documentElement.classList.toggle("dark", this.dark);
       updateThemeColor(this.dark);
       if (persist) localStorage.setItem(STORAGE_KEY, this.dark ? "dark" : "light");
+    },
+    applyStyle(persist = true) {
+      document.documentElement.dataset.theme = this.styleTheme;
+      if (persist) localStorage.setItem(STYLE_STORAGE_KEY, this.styleTheme);
     },
     toggle() {
       this.setDark(!this.dark);
@@ -38,6 +60,10 @@ export const useThemeStore = defineStore("theme", {
       this.dark = dark;
       this.preference = dark ? "dark" : "light";
       this.apply();
+    },
+    setStyleTheme(id: StyleThemeId) {
+      this.styleTheme = id;
+      this.applyStyle();
     },
     followSystem() {
       this.preference = "system";
@@ -51,6 +77,10 @@ export const useThemeStore = defineStore("theme", {
       this.dark = stored ?? systemPrefersDark();
       document.documentElement.classList.toggle("dark", this.dark);
       updateThemeColor(this.dark);
+      const storedStyle = readStoredStyleTheme();
+      this.styleTheme = storedStyle ?? DEFAULT_STYLE_THEME;
+      if (storedStyle == null) localStorage.removeItem(STYLE_STORAGE_KEY);
+      this.applyStyle(false);
       if (!this.systemListenerBound) {
         this.systemListenerBound = true;
         window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (event) => {

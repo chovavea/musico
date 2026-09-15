@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.adapters.download_worker import DownloadWorker
-from app.adapters.http.middleware import ApiTokenMiddleware, RequestIdMiddleware
+from app.adapters.http.middleware import (
+    ApiTokenMiddleware,
+    ExcludingGZipMiddleware,
+    RequestIdMiddleware,
+)
 from app.adapters.http.routes import build_router
 from app.adapters.persistence.database import make_engine, make_session_factory
 from app.adapters.persistence.repository import ChartRepository
@@ -211,6 +215,13 @@ def create_app(
         await engine.dispose()
 
     app = FastAPI(title="musico", lifespan=lifespan)
+    # Search payloads are ~100 KiB of JSON. Starlette 1.4 only skips
+    # text/event-stream, so ExcludingGZipMiddleware also leaves audio/*, video/*,
+    # image/*, octet-stream and 206 ranges uncompressed. Added first, i.e.
+    # innermost: the BaseHTTPMiddleware layers below turn responses into streams,
+    # and a streamed body loses the Content-Length that the minimum_size check
+    # needs.
+    app.add_middleware(ExcludingGZipMiddleware, minimum_size=1024)
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(ApiTokenMiddleware, api_token=settings.api_token)
     app.include_router(build_router())

@@ -29,6 +29,7 @@ from app.services.catalog import (
     payload_from_raw,
 )
 from app.services.health import build_health, compute_staleness
+from app.services.search import MAX_LIMIT
 
 
 class MoveBoardIn(BaseModel):
@@ -93,7 +94,7 @@ def build_router() -> APIRouter:
         request: Request,
         q: str = Query(default="", max_length=200),
         type: Literal["suggest", "full"] = Query(default="full"),
-        limit: int | None = Query(default=None, ge=1, le=20),
+        limit: int | None = Query(default=None, ge=1, le=MAX_LIMIT),
     ) -> Any:
         return ok(
             await request.app.state.search_service.search(

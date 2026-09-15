@@ -32,11 +32,26 @@ docker tag docker.m.daocloud.io/library/python:3.12-alpine python:3.12-alpine
 
 ```text
 GET /api/v1/search?q=周杰伦&type=suggest&limit=5
-GET /api/v1/search?q=周杰伦&type=full&limit=20
+GET /api/v1/search?q=周杰伦&type=full&limit=100
 ```
+
+`q` 至少 1 个字符；`limit` 上限 100，默认联想 `suggest` 取 5 条、结果页 `full` 取 100 条，
+每个平台各自按该数量取数后再跨平台合并去重，从而最终条数不超过 `limit`；接口不分页，
+结果页首屏渲染 10 条，向下滚动再每次追加 10 条（纯前端渲染，不额外请求接口）。
 
 搜索结果只在响应层临时聚合，不会写入歌曲历史或创建下载任务；下载和曲库状态仍复用现有
 `/api/v1/downloads` 与 `/api/v1/library` 流程。
+
+平台扇出有 2 秒总预算（`_SEARCH_BUDGET_SEC`）：超时的平台被取消并按不可用上报（`status: error`、
+`reason: timeout`），其余平台的结果照常返回并把 `partial` 置为 `true`，前端显示「部分平台暂时不可用」，
+而不是让一个卡住的平台拖满出站超时（`HTTP_TIMEOUT_SEC` 默认 15 秒）。实测各平台在 `limit=100` 下
+耗时 0.25–0.8 秒，2 秒留有约 2.5 倍余量。**超时的结果不进缓存**：否则一次网络抖动会让该平台在这个
+查询上消失整个 TTL，用户重试也拿不回来；只有全部平台都给出答复（含「没搜到」）的结果才缓存。
+平台自身的失败也走同一口径：QQ 音乐的 `req_1.code != 0`、
+酷狗的 `status != 1` 或 `errcode != 0` 表示请求被拒绝或限流，插件抛错让该平台标为失败；
+**真正的「没搜到」是 `code = 0`（酷狗 `status = 1, errcode = 0`）加空列表**，不能被当成失败。
+搜索响应体积较大（100 条约 90 KiB），已启用 GZip，实测压缩到约 9 KiB（约 -90%）；音频、视频、封面、
+曲库文件和 206 Range 响应按内容类型/状态排除，不做压缩。
 
 本地开发：
 

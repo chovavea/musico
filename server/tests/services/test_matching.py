@@ -1,9 +1,38 @@
-from app.domain.matching import is_auto_match, is_same_recording, normalize_text, track_key
+from app.domain.matching import (
+    is_auto_match,
+    is_same_recording,
+    normalize_text,
+    title_match_key,
+    track_key,
+    track_match_score,
+    version_markers,
+)
 from app.domain.models import TrackRef
 
 
 def test_normalize_text_removes_version_noise() -> None:
     assert normalize_text("  Sky [Live] ") == "sky"
+
+
+def test_stored_normalization_keeps_traditional_characters() -> None:
+    """Stored keys stay unfolded, so identity_key values do not shift."""
+    assert normalize_text("告白氣球") == "告白氣球"
+    assert title_match_key("告白氣球") == title_match_key("告白气球")
+
+
+def test_traditional_and_simplified_credits_are_the_same_recording() -> None:
+    simplified = TrackRef(
+        platform="qqmusic", external_id="q1", title="告白气球", artist="周杰伦", duration_ms=220_000
+    )
+    traditional = TrackRef(
+        platform="kuwo", external_id="k1", title="告白氣球", artist="周杰倫", duration_ms=221_000
+    )
+    assert is_same_recording(simplified, traditional)
+    assert track_match_score(simplified, traditional) >= 0.94
+
+
+def test_version_markers_recognize_folded_markers() -> None:
+    assert version_markers("晴天 (現場)") == frozenset({"现场"})
 
 
 def test_track_matching_requires_artist_and_duration() -> None:

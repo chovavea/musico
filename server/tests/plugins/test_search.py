@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -7,6 +9,7 @@ import pytest
 from app.domain.models import TrackQuery
 from app.plugins.kugou.search import KugouSearch
 from app.plugins.kugou.search import parse_search_payload as parse_kugou
+from app.plugins.kugou.search import search_params as kugou_params
 from app.plugins.kuwo.search import KuwoSearch
 from app.plugins.kuwo.search import parse_search_payload as parse_kuwo
 from app.plugins.netease.search import NeteaseSearch
@@ -132,6 +135,139 @@ def test_qq_search_payload_is_parsed_in_seconds_to_milliseconds() -> None:
     assert tracks[0].album == "未完成"
 
 
+def qq_page(start: int, count: int) -> dict[str, Any]:
+    return {
+        "code": 0,
+        "req_1": {
+            "code": 0,
+            "data": {
+                "body": {
+                    "song": {
+                        "list": [
+                            {
+                                "mid": f"mid-{start + index:03d}",
+                                "name": f"我不难过 {start + index}",
+                                "interval": 320,
+                                "singer": [{"name": "孙燕姿"}],
+                                "album": {"name": "未完成"},
+                            }
+                            for index in range(count)
+                        ]
+                    }
+                }
+            },
+        },
+    }
+
+
+async def test_qq_search_pages_past_the_sixty_item_page_cap() -> None:
+    """num_per_page above 60 makes QQ answer with an empty song list."""
+    params: list[tuple[int, int]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        param = json.loads(request.content)["req_1"]["param"]
+        page = int(param["page_num"])
+        params.append((page, int(param["num_per_page"])))
+        return httpx.Response(200, json=qq_page((page - 1) * 60, 60 if page == 1 else 10))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await QQMusicSearch(client).search(QUERY.model_copy(update={"limit": 70}))
+
+    assert len(tracks) == 70
+    assert [track.external_id for track in tracks[:2]] == ["mid-000", "mid-001"]
+    assert [track.external_id for track in tracks[-1:]] == ["mid-069"]
+    # Pages are requested together, so only their set is stable.
+    assert sorted(params) == [(1, 60), (2, 60)]
+
+
+async def test_qq_search_stops_when_the_api_repeats_a_page() -> None:
+    calls: list[int] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(200, json=qq_page(0, 60))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await QQMusicSearch(client).search(QUERY.model_copy(update={"limit": 70}))
+
+    assert len(tracks) == 60
+    assert len(calls) == 2
+
+
+async def test_qq_search_requests_its_pages_concurrently() -> None:
+    """Both pages must be in flight at once; a serial version deadlocks here."""
+    arrived = 0
+    both_arrived = asyncio.Event()
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal arrived
+        arrived += 1
+        if arrived == 2:
+            both_arrived.set()
+        await asyncio.wait_for(both_arrived.wait(), timeout=1.0)
+        return httpx.Response(200, json=qq_page(0, 60))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await QQMusicSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+    assert arrived == 2
+    assert len(tracks) == 60
+
+
+async def test_qq_search_reports_a_throttled_response_as_a_failure() -> None:
+    """HTTP 200 with code 2001 and no songs means throttled, not "no matches"."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 0, "req_1": {"code": 2001}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError):
+            await QQMusicSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+
+async def test_qq_search_keeps_an_empty_result_a_success() -> None:
+    """A genuine miss is code 0 with an empty list and must not fail."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=qq_page(0, 0))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await QQMusicSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+    assert tracks == []
+
+
+async def test_qq_search_keeps_the_first_page_when_a_later_page_is_throttled() -> None:
+    """A throttled second page must not discard the songs already in hand."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(json.loads(request.content)["req_1"]["param"]["page_num"])
+        if page == 2:
+            return httpx.Response(200, json={"code": 0, "req_1": {"code": 2001}})
+        return httpx.Response(200, json=qq_page(0, 60))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await QQMusicSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+    assert len(tracks) == 60
+    assert tracks[0].external_id == "mid-000"
+
+
+async def test_qq_search_keeps_an_empty_first_page_when_a_later_page_fails() -> None:
+    """A genuine miss on page 1 is still a miss, even if page 2 is throttled."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(json.loads(request.content)["req_1"]["param"]["page_num"])
+        if page == 1:
+            return httpx.Response(200, json=qq_page(0, 0))
+        return httpx.Response(200, json={"code": 0, "req_1": {"code": 2001}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await QQMusicSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+    assert tracks == []
+
+
 def test_kugou_search_payload_is_parsed_with_album_and_duration() -> None:
     tracks = parse_kugou(KUGOU_PAYLOAD, limit=5)
     assert [track.external_id for track in tracks] == [
@@ -151,6 +287,118 @@ def test_kugou_search_payload_is_parsed_with_album_and_duration() -> None:
     assert tracks[1].cover_url == (
         "http://singerimg.kugou.com/uploadpic/softhead/{size}/20241015/a.jpg"
     )
+
+
+def kugou_page(start: int, count: int) -> dict[str, Any]:
+    return {
+        "data": {
+            "info": [
+                {
+                    "hash": f"hash-{start + index:03d}",
+                    "songname": f"我不难过 {start + index}",
+                    "singername": "孙燕姿",
+                    "album_name": "未完成",
+                    "duration": 320,
+                }
+                for index in range(count)
+            ]
+        }
+    }
+
+
+async def test_kugou_search_pages_past_the_thirty_item_page_cap() -> None:
+    """The v3 endpoint ignores pagesize above 30 and answers with 30 rows."""
+    params: list[tuple[int, int]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        params.append((page, int(request.url.params["pagesize"])))
+        return httpx.Response(200, json=kugou_page((page - 1) * 30, 30 if page < 3 else 10))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await KugouSearch(client).search(QUERY.model_copy(update={"limit": 70}))
+
+    assert len(tracks) == 70
+    assert [track.external_id for track in tracks[:2]] == ["hash-000", "hash-001"]
+    assert [track.external_id for track in tracks[-1:]] == ["hash-069"]
+    # Pages are requested together, so only their set is stable.
+    assert sorted(params) == [(1, 30), (2, 30), (3, 30)]
+
+
+async def test_kugou_search_stops_when_the_api_repeats_a_page() -> None:
+    calls: list[int] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(200, json=kugou_page(0, 30))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await KugouSearch(client).search(QUERY.model_copy(update={"limit": 70}))
+
+    assert len(tracks) == 30
+    # 70 items need three pages of 30, all requested up front; the repeats are
+    # dropped by the de-duplication instead of stopping the paging early.
+    assert len(calls) == 3
+
+
+async def test_kugou_search_requests_its_pages_concurrently() -> None:
+    """Every page must be in flight at once; a serial version deadlocks here."""
+    arrived = 0
+    all_arrived = asyncio.Event()
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal arrived
+        arrived += 1
+        if arrived == 4:
+            all_arrived.set()
+        await asyncio.wait_for(all_arrived.wait(), timeout=1.0)
+        return httpx.Response(200, json=kugou_page(0, 30))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await KugouSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+    assert arrived == 4
+    assert len(tracks) == 30
+
+
+async def test_kugou_search_reports_a_failed_envelope_as_a_failure() -> None:
+    """status != 1 carries a throttled or rejected request, not an empty result."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": 0, "errcode": 20001, "error": "被限流"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError):
+            await KugouSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+
+async def test_kugou_search_keeps_an_empty_result_a_success() -> None:
+    """status 1 with errcode 0 and no rows is a real miss and must not fail."""
+    payload = {"status": 1, "errcode": 0, "error": "", "data": {"info": []}}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await KugouSearch(client).search(QUERY.model_copy(update={"limit": 100}))
+
+    assert tracks == []
+
+
+async def test_kugou_search_keeps_the_first_page_when_a_later_page_is_rejected() -> None:
+    """A failed later page must not discard songs already fetched."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        if page > 1:
+            return httpx.Response(200, json={"status": 0, "errcode": 20001, "error": "被限流"})
+        return httpx.Response(200, json=kugou_page(0, 30))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tracks = await KugouSearch(client).search(QUERY.model_copy(update={"limit": 70}))
+
+    assert len(tracks) == 30
+    assert tracks[0].external_id == "hash-000"
 
 
 def test_kuwo_search_payload_is_parsed_from_the_js_literal() -> None:
@@ -288,6 +536,11 @@ def test_qq_search_payload_sends_the_web_client_credentials() -> None:
     assert request["module"] == "music.search.SearchCgiService"
     assert request["param"]["query"] == "我不难过 孙燕姿"
     assert request["param"]["num_per_page"] == 5
+    assert request["param"]["page_num"] == 1
+    # The API returns nothing above 60 per page, so the request is capped and
+    # the remaining results have to come from later pages.
+    assert search_payload("我不难过 孙燕姿", 100)["req_1"]["param"]["num_per_page"] == 60
+    assert search_payload("我不难过 孙燕姿", 100, page=3)["req_1"]["param"]["page_num"] == 3
 
 
 async def test_netease_search_posts_to_cloud_search_endpoint() -> None:
@@ -340,6 +593,9 @@ async def test_kugou_search_requests_the_v3_endpoint() -> None:
     assert seen[0].url.params["keyword"] == "我不难过 孙燕姿"
     assert seen[0].url.params["pagesize"] == "5"
     assert seen[0].headers["referer"] == "https://www.kugou.com/"
+    # The endpoint caps a page at 30 rows, so bigger limits are paged.
+    assert kugou_params("我不难过 孙燕姿", 100)["pagesize"] == 30
+    assert kugou_params("我不难过 孙燕姿", 100, page=4)["page"] == 4
 
 
 async def test_kuwo_search_requests_the_legacy_endpoint() -> None:
