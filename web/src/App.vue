@@ -218,10 +218,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div
-    class="relative min-h-dvh"
-    :class="player.current ? 'pb-[calc(6.5rem+env(safe-area-inset-bottom,0px))]' : 'pb-4'"
-  >
+  <div class="relative min-h-dvh">
     <a
       href="#main-content"
       class="sr-only fixed left-4 top-4 z-[110] rounded-lg bg-white px-4 py-3 text-zinc-900 focus:not-sr-only"
@@ -360,7 +357,15 @@ onUnmounted(() => {
         </nav>
       </div>
     </header>
-    <main id="main-content" class="mx-auto max-w-7xl px-4 py-4 md:py-6">
+    <main
+      id="main-content"
+      class="mx-auto max-w-7xl px-4 pt-4 md:pt-6"
+      :class="
+        player.current
+          ? 'pb-[calc(var(--player-bar-h,5.5rem)+1rem)] md:pb-[calc(var(--player-bar-h,5.5rem)+1.5rem)]'
+          : 'pb-4 md:pb-6'
+      "
+    >
       <RouterView />
     </main>
     <PlayerBar v-if="player.current" />
