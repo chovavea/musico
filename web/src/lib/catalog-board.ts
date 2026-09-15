@@ -1,4 +1,5 @@
 import type { BoardInfo, CatalogGroup, CatalogPlatform, LatestBoard } from "../types";
+import { platformLabel } from "./boards";
 
 export function groupsOf(catalog: CatalogPlatform[], platform: string): CatalogGroup[] {
   return catalog.find((item) => item.id === platform)?.groups ?? [];
@@ -25,7 +26,7 @@ export function resolveCatalogBoard(
 ): BoardInfo {
   const yaml = boards.find((item) => item.platform === platform && item.chart_key === key);
   if (yaml) return yaml;
-  const prefix = platform === "qqmusic" ? "QQ音乐" : "网易云";
+  const prefix = platformLabel(platform);
   const label = chartName(catalog, boards, platform, key);
   return {
     id: `catalog:${platform}:${key}`,

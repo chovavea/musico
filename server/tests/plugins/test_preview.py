@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 from app.adapters.http.preview import _open_audio, host_allowed
 from app.domain.models import TrackRef
 from app.plugins.bilibili.preview import (
@@ -14,6 +15,12 @@ from app.plugins.bilibili.preview import (
 )
 from app.plugins.bilibili.preview import (
     parse_preview_payload as parse_bilibili_preview,
+)
+from app.plugins.kugou.preview import (
+    KugouPreview,
+)
+from app.plugins.kugou.preview import (
+    parse_preview_payload as parse_kugou_preview,
 )
 from app.plugins.netease.preview import official_outer_url
 from app.plugins.qqmusic.preview import (
@@ -86,8 +93,11 @@ def test_preview_host_allowlist() -> None:
     assert host_allowed("m801.music.126.net")
     assert host_allowed("music.163.com")
     assert host_allowed("upos-sz-mirrorcos.bilivideo.com")
+    assert host_allowed("sharefs.kugou.com")
+    assert host_allowed("sharefs.tx.kugou.com")
     assert not host_allowed("evil.example.com")
     assert not host_allowed("qq.com")
+    assert not host_allowed("kugou.com.evil.example")
 
 
 def test_bilibili_detail_payload_parses_official_player_info() -> None:
@@ -251,3 +261,68 @@ async def test_qq_preview_posts_m500_then_c400() -> None:
     assert [name[:4] for name in calls] == ["M500", "C400"]
     assert info.preview_url == "https://x/C400x.m4a"
     assert info.quality == "low"
+
+
+def test_kugou_preview_reads_the_anonymous_play_url() -> None:
+    info = parse_kugou_preview(
+        {
+            "status": 1,
+            "errcode": 0,
+            "url": "https://sharefs.kugou.com/2026/track.mp3",
+            "bitRate": 128,
+        }
+    )
+    assert info.preview_url == "https://sharefs.kugou.com/2026/track.mp3"
+    assert info.quality == "low"
+
+
+def test_kugou_preview_falls_back_to_the_backup_url() -> None:
+    info = parse_kugou_preview(
+        {
+            "status": 1,
+            "url": "",
+            "bitRate": 320,
+            "backup_url": ["https://sharefs.tx.kugou.com/2026/track.mp3"],
+        }
+    )
+    assert info.preview_url == "https://sharefs.tx.kugou.com/2026/track.mp3"
+    assert info.quality == "medium"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # Member-only tracks answer with status 0 and no URL at all.
+        {"status": 0, "error": "需要付费", "url": "", "backup_url": {}},
+        {"status": 1, "url": "", "backup_url": []},
+        {"status": 1, "url": 42},
+        None,
+        {},
+    ],
+)
+def test_kugou_preview_returns_nothing_when_no_url_is_published(payload: object) -> None:
+    info = parse_kugou_preview(payload)
+    assert info.preview_url is None
+    assert info.quality is None
+
+
+async def test_kugou_preview_requests_play_info_with_the_song_hash() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={"status": 1, "url": "https://sharefs.kugou.com/2026/track.mp3"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        info = await KugouPreview(client).preview(
+            TrackRef(platform="kugou", external_id="abc123", title="t", artist="a")
+        )
+    assert seen[0].url.host == "m.kugou.com"
+    assert seen[0].url.path == "/app/i/getSongInfo.php"
+    assert seen[0].url.params["cmd"] == "playInfo"
+    assert seen[0].url.params["hash"] == "abc123"
+    assert seen[0].headers["referer"] == "https://www.kugou.com/"
+    assert info.preview_url == "https://sharefs.kugou.com/2026/track.mp3"

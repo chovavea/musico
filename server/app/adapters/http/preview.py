@@ -40,6 +40,7 @@ _ALLOWED_SUFFIXES = (
     "tc.qq.com",
     "bilivideo.com",
     "bilivideo.cn",
+    "kugou.com",
 )
 # Upstream calls are not meant to be cut short: a slow answer is still a usable
 # answer, so the only per-call ceiling is a generous one minute. Production reads
@@ -73,6 +74,7 @@ _PLATFORM_REFERERS = {
     "netease": "https://music.163.com/",
     "qqmusic": "https://y.qq.com/",
     "bilibili": "https://www.bilibili.com/audio/home/",
+    "kugou": "https://www.kugou.com/",
 }
 
 

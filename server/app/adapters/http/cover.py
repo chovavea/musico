@@ -27,8 +27,20 @@ CACHE_MAX_ITEMS = 512
 CACHE_TTL_SEC = 24 * 60 * 60
 ALLOWED_SIZES = (150, 500)
 
-_ALLOWED_HOST_SUFFIXES = ("y.gtimg.cn", "music.126.net", "hdslb.com")
+_ALLOWED_HOST_SUFFIXES = (
+    "y.gtimg.cn",
+    "music.126.net",
+    "hdslb.com",
+    "imge.kugou.com",
+    "singerimg.kugou.com",
+)
 _BILIBILI_HOSTS = {"i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com"}
+_KUGOU_HOSTS = ("imge.kugou.com", "singerimg.kugou.com")
+_KUGOU_PATH_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("imge.kugou.com", "/stdmusic"),
+    ("singerimg.kugou.com", "/uploadpic/softhead"),
+)
+_KUGOU_SIZE_MARKER = "{size}"
 _QQ_SIZE = re.compile(r"R\d+x\d+", flags=re.IGNORECASE)
 _MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _MEDIA_ALIASES = {
@@ -132,6 +144,10 @@ def rewrite_cover_url(url: str, size: int) -> str:
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         query["param"] = f"{size}y{size}"
         parsed = parsed._replace(query=urlencode(query))
+    elif host_matches(host, _KUGOU_HOSTS):
+        if _KUGOU_SIZE_MARKER not in parsed.path:
+            raise CoverImageError("Kugou cover URL has no size marker")
+        parsed = parsed._replace(path=parsed.path.replace(_KUGOU_SIZE_MARKER, str(size)))
     else:
         base_path = parsed.path.split("@", 1)[0]
         parsed = parsed._replace(path=f"{base_path}@{size}w_{size}h_1c.webp")
@@ -273,12 +289,23 @@ def _parse_allowed_url(url: str) -> tuple[ParseResult, str]:
             raise CoverImageError("QQ cover path is not allowed")
     elif host_matches(host, ("music.126.net",)):
         pass
+    elif host_matches(host, _KUGOU_HOSTS):
+        prefix = _kugou_path_prefix(host)
+        if prefix is None or (path != prefix and not path.startswith(f"{prefix}/")):
+            raise CoverImageError("Kugou cover path is not allowed")
     elif host in _BILIBILI_HOSTS:
         if path != "/bfs" and not path.startswith("/bfs/"):
             raise CoverImageError("Bilibili cover path is not allowed")
     else:
         raise CoverImageError("cover URL host is not allowed")
     return parsed, host
+
+
+def _kugou_path_prefix(host: str) -> str | None:
+    for suffix, prefix in _KUGOU_PATH_PREFIXES:
+        if host_matches(host, (suffix,)):
+            return prefix
+    return None
 
 
 def _detected_media_type(body: bytes) -> str | None:

@@ -8,6 +8,7 @@ import httpx
 import pytest
 from app.domain.models import BoardSpec
 from app.plugins.bilibili.charts import BilibiliCharts
+from app.plugins.kugou.charts import KugouCharts
 from app.plugins.netease.charts import NeteaseCharts
 from app.plugins.qqmusic.charts import QQMusicCharts
 
@@ -42,6 +43,33 @@ class _BilibiliChartTransport(httpx.AsyncBaseTransport):
         if request.url.path.endswith("/music_list"):
             return httpx.Response(200, json=self._music_list)
         return httpx.Response(404)
+
+
+class _KugouChartTransport(httpx.AsyncBaseTransport):
+    def __init__(self, rank_list: dict[str, Any], rank_song: dict[str, Any]) -> None:
+        self._rank_list = rank_list
+        self._rank_song = rank_song
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/rank/list"):
+            return httpx.Response(200, json=self._rank_list)
+        if request.url.path.endswith("/rank/song"):
+            return httpx.Response(200, json=self._rank_song)
+        return httpx.Response(404)
+
+
+class _KugouPagedSongTransport(httpx.AsyncBaseTransport):
+    def __init__(self, pages: dict[int, dict[str, Any]]) -> None:
+        self._pages = pages
+        self.requested: list[int] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        self.requested.append(page)
+        payload = self._pages.get(page)
+        if payload is None:
+            return httpx.Response(200, json={"status": 1, "data": {"total": 0, "info": []}})
+        return httpx.Response(200, json=payload)
 
 
 @pytest.mark.asyncio
@@ -209,5 +237,123 @@ async def test_bilibili_catalog_lists_supported_music_charts() -> None:
                 {"key": "3", "name": "二创榜", "playable": True},
             ],
         }
+    ]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_kugou_fixture_skips_bad_row(fixtures_dir: Path) -> None:
+    payload = json.loads((fixtures_dir / "kugou_rank_song.json").read_text(encoding="utf-8"))
+    client = httpx.AsyncClient(transport=_FixtureTransport(payload))
+    charts = KugouCharts(client)
+    spec = BoardSpec(
+        id="kugou_hot",
+        platform="kugou",
+        name="酷狗音乐TOP500",
+        type="hot",
+        interval_sec=1800,
+        extra={"rank_id": 8888},
+    )
+    items = await charts.fetch_board(spec)
+    assert [item.external_id for item in items] == [
+        "213d580ca0bdcc28a5fdba995ffda106",
+        "3fd7e1ec51122c745c637735c8bde716",
+    ]
+    # The skipped row keeps its official rank, so the survivors read 1 and 3.
+    assert [item.rank for item in items] == [1, 3]
+    assert items[0].title == "甲乙丙丁 (你我怎么两清)"
+    assert items[0].artist == "李佳薇"
+    assert items[0].duration_ms == 210_000
+    # The rank endpoint publishes the album id and cover, never the album name.
+    assert items[0].album is None
+    assert items[0].cover_url == (
+        "http://imge.kugou.com/stdmusic/{size}/20260630/20260630202952972321.jpg"
+    )
+    assert items[0].official_url == (
+        "https://www.kugou.com/song/#hash=213d580ca0bdcc28a5fdba995ffda106"
+        "&album_id=197648995"
+    )
+    assert items[1].artist == "孙燕姿 / 某合唱"
+    assert items[1].cover_url == (
+        "http://imge.kugou.com/stdmusic/{size}/20250624/20250624174203375937.jpg"
+    )
+    await client.aclose()
+
+
+def _kugou_rank_row(song_hash: str, title: str, sort: int) -> dict[str, Any]:
+    return {
+        "hash": song_hash,
+        "songname": title,
+        "sort": sort,
+        "duration": 210,
+        "authors": [{"author_name": "A"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_kugou_fetches_every_rank_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.plugins.kugou.charts._PAGE_SIZE", 2)
+    pages = {
+        1: {
+            "status": 1,
+            "data": {
+                "total": 5,
+                "info": [
+                    _kugou_rank_row("aa", "一", 1),
+                    _kugou_rank_row("bb", "二", 2),
+                ],
+            },
+        },
+        2: {
+            "status": 1,
+            "data": {
+                "total": 5,
+                "info": [
+                    {"songname": "坏数据"},
+                    _kugou_rank_row("cc", "四", 4),
+                ],
+            },
+        },
+        3: {
+            "status": 1,
+            "data": {
+                "total": 5,
+                "info": [_kugou_rank_row("dd", "五", 5)],
+            },
+        },
+    }
+    transport = _KugouPagedSongTransport(pages)
+    client = httpx.AsyncClient(transport=transport)
+    charts = KugouCharts(client)
+    spec = BoardSpec(
+        id="kugou_hot",
+        platform="kugou",
+        name="酷狗音乐TOP500",
+        type="hot",
+        interval_sec=1800,
+        extra={"rank_id": 8888},
+    )
+    items = await charts.fetch_board(spec)
+    assert [item.external_id for item in items] == ["aa", "bb", "cc", "dd"]
+    assert [item.rank for item in items] == [1, 2, 4, 5]
+    assert transport.requested == [1, 2, 3]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_kugou_catalog_groups_ranks_by_classify(fixtures_dir: Path) -> None:
+    rank_song = json.loads((fixtures_dir / "kugou_rank_song.json").read_text(encoding="utf-8"))
+    rank_list = json.loads((fixtures_dir / "kugou_rank_list.json").read_text(encoding="utf-8"))
+    client = httpx.AsyncClient(transport=_KugouChartTransport(rank_list, rank_song))
+    charts = KugouCharts(client)
+    catalog = await charts.list_catalog()
+    assert catalog == [
+        {"name": "热门榜", "charts": [{"key": "8888", "name": "TOP500", "playable": True}]},
+        {"name": "地区榜", "charts": [{"key": "31308", "name": "内地榜", "playable": True}]},
+        {"name": "曲风语种", "charts": [{"key": "59896", "name": "摇滚榜", "playable": True}]},
+        {
+            "name": "全球转载",
+            "charts": [{"key": "4680", "name": "英国单曲榜", "playable": True}],
+        },
     ]
     await client.aclose()

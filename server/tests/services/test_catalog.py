@@ -1,8 +1,10 @@
 from app.services.catalog import (
     apply_catalog_order,
     catalog_chart_keys,
+    chart_key_for_spec,
     insert_chart_before,
     is_song_chart,
+    live_spec,
     song_chart_groups,
     sorted_catalog_charts,
 )
@@ -86,4 +88,11 @@ def test_insert_chart_before_moves_to_slot() -> None:
     assert insert_chart_before(keys, "26", "26") == keys
     assert insert_chart_before(keys, "999", "26") is None
     assert insert_chart_before(keys, "26", "nope") is None
+
+
+def test_live_spec_maps_a_kugou_rank_id_both_ways() -> None:
+    spec = live_spec("kugou", "8888", "酷狗音乐TOP500")
+    assert spec.id == "catalog:kugou:8888"
+    assert spec.extra == {"rank_id": 8888}
+    assert chart_key_for_spec(spec) == "8888"
 

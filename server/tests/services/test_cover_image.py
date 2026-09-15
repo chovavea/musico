@@ -36,6 +36,26 @@ WEBP = b"RIFF\x04\x00\x00\x00WEBP"
             150,
             "https://i0.hdslb.com/bfs/music/abc.jpg@150w_150h_1c.webp",
         ),
+        (
+            "http://imge.kugou.com/stdmusic/{size}/20260630/abc.jpg",
+            150,
+            "https://imge.kugou.com/stdmusic/150/20260630/abc.jpg",
+        ),
+        (
+            "http://imge.kugou.com/stdmusic/{size}/20260630/abc.jpg",
+            500,
+            "https://imge.kugou.com/stdmusic/500/20260630/abc.jpg",
+        ),
+        (
+            "http://singerimg.kugou.com/uploadpic/softhead/{size}/20241015/abc.jpg",
+            150,
+            "https://singerimg.kugou.com/uploadpic/softhead/150/20241015/abc.jpg",
+        ),
+        (
+            "http://singerimg.kugou.com/uploadpic/softhead/{size}/20241015/abc.jpg",
+            500,
+            "https://singerimg.kugou.com/uploadpic/softhead/500/20241015/abc.jpg",
+        ),
     ],
 )
 def test_rewrite_cover_url_for_each_provider(url: str, size: int, expected: str) -> None:
@@ -53,6 +73,14 @@ def test_rewrite_cover_url_for_each_provider(url: str, size: int, expected: str)
         "https://y.gtimg.cn/not-music/T002R300x300M000abc.jpg",
         "https://y.gtimg.cn/music/photo_new/../private/T002R300x300M000abc.jpg",
         "https://i0.hdslb.com/not-bfs/abc.jpg",
+        "https://imge.kugou.com/not-stdmusic/{size}/abc.jpg",
+        "https://imge.kugou.com/stdmusic/20260630/abc.jpg",
+        "https://imge.kugou.com.evil.example/stdmusic/{size}/abc.jpg",
+        "https://imge.kugou.com/uploadpic/softhead/{size}/abc.jpg",
+        "https://singerimg.kugou.com/not-uploadpic/{size}/abc.jpg",
+        "https://singerimg.kugou.com/uploadpic/softhead/20241015/abc.jpg",
+        "https://singerimg.kugou.com/stdmusic/{size}/abc.jpg",
+        "https://singerimg.kugou.com.evil.example/uploadpic/softhead/{size}/abc.jpg",
         f"https://p1.music.126.net/{'a' * 2050}.jpg",
     ],
 )

@@ -16,6 +16,8 @@ def chart_key_for_spec(spec: BoardSpec) -> str | None:
         return str(extra["playlist_id"])
     if spec.platform == "bilibili" and isinstance(extra.get("list_type"), int):
         return str(extra["list_type"])
+    if spec.platform == "kugou" and isinstance(extra.get("rank_id"), int):
+        return str(extra["rank_id"])
     return None
 
 
@@ -164,6 +166,8 @@ def live_spec(platform: str, key: str, name: str) -> BoardSpec:
         extra = {"playlist_id": key}
     elif platform == "bilibili":
         extra = {"list_type": int(key)}
+    elif platform == "kugou":
+        extra = {"rank_id": int(key)}
     else:
         extra = {}
     return BoardSpec(

@@ -15,6 +15,13 @@ boards:
     overview_slot: right
     interval_sec: 3600
     extra: { playlist_id: "3778678" }
+  - id: kugou_hot
+    platform: kugou
+    name: 酷狗音乐TOP500
+    type: hot
+    enabled: true
+    interval_sec: 3600
+    extra: { rank_id: 8888 }
   - id: bilibili_hot
     platform: bilibili
     name: 哔哩哔哩音乐热歌榜

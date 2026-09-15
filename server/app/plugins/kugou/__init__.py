@@ -1,0 +1,1 @@
+"""KuGou Music plugin."""

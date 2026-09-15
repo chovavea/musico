@@ -1,0 +1,15 @@
+{
+  "status": 1,
+  "errcode": 0,
+  "data": {
+    "total": 5,
+    "info": [
+      { "rankid": 8888, "rankname": "TOP500", "classify": 1, "haschildren": 0 },
+      { "rankid": 31308, "rankname": "内地榜", "classify": 2, "haschildren": 0 },
+      { "rankid": 59896, "rankname": "摇滚榜", "classify": 5, "haschildren": 0 },
+      { "rankid": 4680, "rankname": "英国单曲榜", "classify": 4, "haschildren": 0 },
+      { "rankid": 9001, "rankname": "父级分组", "classify": 1, "haschildren": 1 },
+      { "rankname": "坏数据", "classify": 3 }
+    ]
+  }
+}

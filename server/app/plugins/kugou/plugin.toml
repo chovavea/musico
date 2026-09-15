@@ -1,0 +1,9 @@
+id = "kugou"
+name = "酷狗音乐"
+capabilities = ["chart", "preview", "search"]
+
+[config_schema]
+required = ["rank_id"]
+
+[config_schema.types]
+rank_id = "int"
