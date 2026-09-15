@@ -1,6 +1,11 @@
 import type { HealthPayload } from "../types";
 
-/** 0 红 → 1 绿。未拉取完返回 -1。 */
+/**
+ * 0 红 → 1 绿。未拉取完返回 -1。
+ *
+ * TODO(health-score): 下载兜底（payload.fallback）目前只在状态页只读展示，
+ * 不参与这里的评分；后续把兜底的失败/成功计数当成一个额外的“源”纳入计算。
+ */
 export function healthScore(payload: HealthPayload | null, error: string): number {
   if (error) return 0;
   if (!payload) return -1;

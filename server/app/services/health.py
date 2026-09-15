@@ -32,6 +32,8 @@ async def build_health(
     session_factory: async_sessionmaker[AsyncSession],
     specs: list[BoardSpec],
     settings: Settings,
+    *,
+    fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     enabled = [spec for spec in specs if spec.enabled]
     async with session_factory() as session:
@@ -72,4 +74,9 @@ async def build_health(
         "status": status,
         "staleness_multiplier": settings.staleness_multiplier,
         "sources": sources,
+        # Read-only for now: the link-out fallback is reported next to the chart
+        # sources but deliberately does not move ``status``.
+        # TODO(health-score): once the fallback has a meaningful success rate,
+        # score it as one more "source" (see web/src/lib/healthScore.ts).
+        "fallback": fallback,
     }

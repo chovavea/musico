@@ -22,6 +22,7 @@ from app.adapters.persistence.database import make_engine, make_session_factory
 from app.adapters.persistence.repository import ChartRepository
 from app.adapters.scheduler.jobs import ChartScheduler
 from app.download_sources.registry import load_download_sources
+from app.fallback.service import FallbackService
 from app.logging import configure_logging
 from app.plugins._registry import load_registry
 from app.services.boards_config import BoardsConfigError, load_raw_boards, parse_board_specs
@@ -107,8 +108,8 @@ def create_app(
     start_scheduler: bool = True,
     run_migrations: bool = True,
 ) -> FastAPI:
-    settings = settings or get_settings()
     export_env_file()
+    settings = settings or get_settings()
     configure_logging(settings.log_level)
 
     boards_path = _resolve_boards_path(settings)
@@ -152,6 +153,15 @@ def create_app(
         trust_env=False,
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     )
+    # The link-out fallback only reads a handful of pages per failed task, so it
+    # gets a small pool and its own (short) timeout; a slow mirror must never
+    # delay chart collection or a real download.
+    fallback_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(settings.fallback_timeout_sec),
+        headers={"User-Agent": user_agent},
+        follow_redirects=False,
+        limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+    )
     registry = load_registry(client)
     download_sources = load_download_sources(
         client,
@@ -171,6 +181,7 @@ def create_app(
     download_service = DownloadService(session_factory, settings)
     download_worker = DownloadWorker(session_factory, download_client, download_sources, settings)
     search_service = SearchService(registry, session_factory)
+    fallback_service = FallbackService(session_factory, fallback_client, settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -196,6 +207,7 @@ def create_app(
         await preview_client.aclose()
         await download_client.aclose()
         await cover_client.aclose()
+        await fallback_client.aclose()
         await engine.dispose()
 
     app = FastAPI(title="musico", lifespan=lifespan)
@@ -215,6 +227,7 @@ def create_app(
     app.state.http_client = client
     app.state.preview_client = preview_client
     app.state.cover_client = cover_client
+    app.state.fallback_service = fallback_service
 
     dist = Path(__file__).resolve().parents[2] / "web" / "dist"
     if dist.is_dir():

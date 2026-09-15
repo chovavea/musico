@@ -132,6 +132,59 @@ export interface HealthPayload {
   status: "starting" | "ready" | "degraded";
   staleness_multiplier: number;
   sources: HealthSource[];
+  fallback: HealthFallback | null;
+}
+
+/** Link-out fallback: a failed download is handed over to an external share page. */
+export type FallbackOutcome =
+  | "jumped"
+  | "no_wav"
+  | "not_found"
+  | "unreachable"
+  | "no_share_link"
+  | "disabled"
+  | "not_failed";
+
+export interface FallbackEvent {
+  id: string;
+  task_id: string | null;
+  track_id: string | null;
+  title: string;
+  artist: string;
+  source_id: string | null;
+  trigger: string;
+  outcome: string;
+  detail: string | null;
+  /** Always null on /health; share URLs stay on the fallback POST response. */
+  share_url: string | null;
+  page_url: string | null;
+  created_at: string;
+}
+
+export interface HealthFallback {
+  enabled: boolean;
+  source_id: string;
+  source_name: string;
+  counts: Record<string, number>;
+  download_failed_total: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  consecutive_failures: number;
+  events: FallbackEvent[];
+}
+
+export interface FallbackResolution {
+  task_id: string;
+  source_id: string;
+  source_name: string;
+  outcome: FallbackOutcome;
+  url: string | null;
+  page_url: string | null;
+  detail: string | null;
+  error: string | null;
+  title: string | null;
+  artist: string | null;
+  cached?: boolean;
 }
 
 export type DownloadStatus =

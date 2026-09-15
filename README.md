@@ -55,13 +55,25 @@ npm run dev
 
 下载源位于 `server/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态与优先级写在 `configs/download_sources.yaml`，修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。**下载源站点地址不进仓库**：环境变量名集中声明在 `configs/download_sources.yaml` 一处的 `config.base_url_env` / `config.cookie_env` / `config.hosts_env`（只写变量名，不写地址），真实地址、Cookie 和额外放行的落地域名填在本地 `.env`（或容器环境）里。插件侧只用 `requires_base_url` 声明自己需不需要地址，不再出现任何变量名。某个源取不到地址时会跳过该源并记 `download_source_missing_base_url` 日志，其余源不受影响；`hosts_env` 是逗号分隔的额外允许主机。
 
-内置下载源包括 `ventura` 和 `sonoma`。`sonoma` 调用其站点的搜索与音频地址解析接口，默认只声明未验证采样率/位深的 FLAC 候选；该站点可能要求正常授权会话，按 `config.cookie_env` 指定的环境变量提供 Cookie（变量名见 `configs/download_sources.yaml`）。不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge；没有有效会话时，源会将搜索/解析失败交给下载源回退链路处理。
+内置下载源目前只有 `ventura`。经 `config.cookie_env` 声明需要授权会话的源，其 Cookie 由该环境变量提供（变量名见 `configs/download_sources.yaml`）；不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge。没有有效会话或站点限制匿名访问时，源应把搜索/解析失败交给下载源回退链路处理，不阻断其他源。
 
 核心负责歌曲匹配、三种允许下载格式（FLAC / WAV / DSF）的质量排序与降级、单任务队列、重试、断点续传、SHA-256 校验和文件入库。多个下载源按照 `configs/download_sources.yaml` 中的 `priority` 从高到低串行检索；候选池再按实际下载质量从高到低排序，同质量时优先使用源 `priority` 高者。未指定 `requested_quality` 时，优先尝试最高质量，下载失败后按候选质量依次降级；指定了格式或采样维度时只匹配该要求，不跨格式降级。下载源只实现 `search` 和 `resolve`，不直接操作文件。
 
 音乐文件默认写入 `data/music/`，容器部署时通过 `MUSIC_LIBRARY_DIR` 修改。PostgreSQL 中的 `musico_library` schema 保存曲目、文件引用和下载任务，不保存音频二进制。
 
 哔哩哔哩音乐插件使用其公开的全站音乐榜、音乐详情和官方试听接口；榜单类型写在 `configs/boards.yaml` 的 `extra.list_type` 中（`1` 为热歌榜，`3` 为二创榜），插件会自动选择对应类型的最新一期。哔哩哔哩音乐站点当前没有与 QQ / 网易同形态的匿名关键词搜索接口，因此本次只接入榜单和本平台官方试听，不把普通视频搜索结果冒充为音频歌曲。
+
+## 下载兜底（跳转到外部网盘）
+
+下载任务最终判失败（重试次数用尽）后，浏览器会被直接送到该曲目在外部网盘上的分享页，由用户自己下载。
+
+- 兜底**不是下载源插件**：站点把 WAV 上传放在网盘分享页后面，本身不提供可直接下载的音频地址（下载按钮指向的页面只有一行跳转脚本，网盘接口还要求登录）。做成 `download_source` 只会让 worker 因为「下载到的不是音频」判失败，所以它是一个只读解析适配器，位于 `server/app/fallback/`。
+- 触发条件是**任务失败**，而不是「没有可用下载源」：任务一旦进入 `failed`，前端就调用 `POST /api/v1/downloads/{task_id}/fallback`；解析成功直接跳转**当前页**（失败是 1.5 秒轮询后才发现的，这个时机再 `window.open` 会被浏览器静默拦截），解析失败就只在状态页留一条记录，不打扰用户。
+- 只认 WAV：`ALLOWED_DOWNLOAD_FORMATS` 之外的 MP3 版本不作为兜底目标。站点上约四分之一的曲目只有 MP3，这类情况记 `no_wav`（无下载源）并且不跳转。
+- 结果按曲目在进程内缓存（成功 7 天、失败 5 分钟，见 `FALLBACK_POSITIVE_TTL_SEC` / `FALLBACK_NEGATIVE_TTL_SEC`）。站点会整站间歇性宕机，搜索、歌曲页、网盘跳转任一环节失败都记 `unreachable`，并且失败结果走短缓存，不会反复打满请求。
+- 状态页只读展示「下载兜底」：下载失败次数、兜底成功次数、连续失败与最近记录。**目前不参与 `healthScore`**，评分接入点见 `web/src/lib/healthScore.ts` 与 `server/app/services/health.py` 里的 `TODO(health-score)`。
+- 站点地址同样不进仓库：`MUSICO_FALLBACK_BASE_URL` 留空时整体关闭兜底（不构造解析器、不发起任何请求）；`MUSICO_FALLBACK_EXTRA_HOSTS` 是逗号分隔的额外放行主机，用于该站点的镜像域名。
+- 出站调用仍走 `server/app/adapters/http/safety.py` 的主机白名单与内网地址校验，跳转地址只从站点页面里读取，不由前端拼接。
 
 ## 试听回退
 

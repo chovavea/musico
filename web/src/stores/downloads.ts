@@ -5,9 +5,11 @@ import {
   downloadSummary,
   listDownloads,
   listLibrary,
+  resolveDownloadFallback,
   retryDownload,
   type DownloadTrackPayload,
 } from "../api";
+import { isQuarkShareUrl } from "../lib/quark-share";
 import type { DownloadSummary, DownloadTask, LibraryAsset } from "../types";
 
 type LocalDownloadState = {
@@ -38,6 +40,9 @@ export const useDownloadsStore = defineStore("downloads", {
     initialized: false,
     libraryLoaded: false,
     failureNotice: null as DownloadTask | null,
+    failedIds: {} as Record<string, boolean>,
+    failedSnapshotReady: false,
+    fallbackPending: {} as Record<string, boolean>,
     localStates: {} as Record<string, LocalDownloadState>,
     deletedAssetIds: {} as Record<string, boolean>,
     actionError: "",
@@ -79,6 +84,7 @@ export const useDownloadsStore = defineStore("downloads", {
           this.summaryError = response.msg || "下载状态读取失败";
           return false;
         }
+        const becomingReady = !this.initialized;
         const previousActiveId = this.summary?.active?.id ?? null;
         const previousActiveStatus = this.summary?.active?.status ?? null;
         const previousFailed = this.summary?.counts.failed ?? 0;
@@ -90,11 +96,14 @@ export const useDownloadsStore = defineStore("downloads", {
           previousActiveId !== activeId || previousActiveStatus !== activeStatus;
         const completedChanged =
           (response.data.counts.completed ?? 0) !== previousCompleted;
+        const failedIncreased = (response.data.counts.failed ?? 0) > previousFailed;
         const failedChanged = (response.data.counts.failed ?? 0) !== previousFailed;
-        if (this.initialized && (activeChanged || completedChanged || failedChanged)) {
-          await this.loadTasks();
-          if (failedChanged && (response.data.counts.failed ?? 0) > previousFailed) {
-            this.failureNotice = this.tasks.find((item) => item.status === "failed") ?? null;
+        if (becomingReady || activeChanged || completedChanged || failedChanged) {
+          const loaded = await this.loadTasks();
+          if (becomingReady) {
+            if (loaded) this.seedFailedSnapshot();
+          } else if (failedIncreased && loaded) {
+            await this.triggerNewFailedFallbacks();
           }
         }
         if (
@@ -130,6 +139,7 @@ export const useDownloadsStore = defineStore("downloads", {
           return false;
         }
         this.tasks = response.data.items;
+        this.pruneFailedSnapshot();
         this.tasksError = "";
         this.syncLocalStates();
         return true;
@@ -256,6 +266,59 @@ export const useDownloadsStore = defineStore("downloads", {
       } finally {
         delete this.retryPending[id];
         this.syncRequestState();
+      }
+    },
+    seedFailedSnapshot() {
+      this.failedIds = {};
+      for (const item of this.tasks) {
+        if (item.status === "failed") this.failedIds[item.id] = true;
+      }
+      this.failedSnapshotReady = true;
+    },
+    pruneFailedSnapshot() {
+      if (!this.failedSnapshotReady) return;
+      const current = new Set(
+        this.tasks.filter((item) => item.status === "failed").map((item) => item.id),
+      );
+      for (const id of Object.keys(this.failedIds)) {
+        if (!current.has(id)) delete this.failedIds[id];
+      }
+    },
+    async triggerNewFailedFallbacks() {
+      if (!this.failedSnapshotReady) {
+        this.seedFailedSnapshot();
+        return;
+      }
+      const newly = this.tasks.filter(
+        (item) => item.status === "failed" && !this.failedIds[item.id],
+      );
+      for (const item of newly) this.failedIds[item.id] = true;
+      if (!newly.length) return;
+      this.failureNotice = newly[0];
+      for (const item of newly) {
+        if (await this.openFallback(item.id)) return;
+      }
+    },
+    // 兜底跳转：下载任务从后端判失败后才发起，后端只读页面、不下载音频，
+    // 返回的是外部网盘分享页。失败是异步的（1.5s 轮询才发现），此时
+    // window.open 会被浏览器静默拦截，所以直接跳转当前页。
+    // TODO(health-score): 兜底目前只记录事件、不参与评分，后续把兜底成功率
+    // 当成一个“源”纳入 healthScore（见 web/src/lib/healthScore.ts）。
+    async openFallback(taskId: string) {
+      if (this.fallbackPending[taskId]) return false;
+      this.fallbackPending[taskId] = true;
+      try {
+        const response = await resolveDownloadFallback(taskId);
+        if (response.code !== 0) return false;
+        const { outcome, url } = response.data;
+        if (outcome !== "jumped" || !url || !isQuarkShareUrl(url)) return false;
+        this.stopPolling();
+        window.location.href = url;
+        return true;
+      } catch {
+        return false;
+      } finally {
+        delete this.fallbackPending[taskId];
       }
     },
     async remove(id: string) {

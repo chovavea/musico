@@ -295,3 +295,34 @@ class PreviewSourceStatRow(LibraryBase):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
+
+
+class FallbackEventRow(LibraryBase):
+    """Append-only trail of the link-out fallback that runs after a failed download.
+
+    One row records the terminal download failure and another records what the
+    fallback resolver answered, so the health page can show why a track could
+    not be downloaded and where the user was sent instead.
+    """
+
+    __tablename__ = "fallback_event"
+    __table_args__ = (
+        Index("ix_fallback_event_created", "created_at"),
+        Index("ix_fallback_event_outcome_created", "outcome", "created_at"),
+        {"schema": LIBRARY_SCHEMA},
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    track_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    artist: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    share_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )

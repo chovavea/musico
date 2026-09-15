@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters.persistence.models import (
     DownloadAttemptRow,
     DownloadTaskRow,
+    FallbackEventRow,
     LibraryAssetRow,
     LibrarySourceRefRow,
     LibraryTrackRow,
@@ -42,6 +43,26 @@ def _track_from_row(row: LibraryTrackRow) -> TrackRef:
         isrc=row.isrc,
         version=row.version,
     )
+
+
+def _fallback_event_payload(
+    row: FallbackEventRow, *, include_share_url: bool = False
+) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "task_id": row.task_id,
+        "track_id": row.track_id,
+        "title": row.title,
+        "artist": row.artist,
+        "source_id": row.source_id,
+        "trigger": row.trigger,
+        "outcome": row.outcome,
+        "detail": row.detail,
+        # Health is an unauthenticated read; keep netdisk share URLs off that path.
+        "share_url": row.share_url if include_share_url else None,
+        "page_url": row.page_url,
+        "created_at": row.created_at.isoformat(),
+    }
 
 
 class LeaseLostError(RuntimeError):
@@ -329,7 +350,28 @@ class LibraryRepository:
         task.heartbeat_at = None
         task.completed_at = completed_at
         task.lease_token = None
+        await self._record_download_failure(task, error)
         return True
+
+    async def _record_download_failure(self, task: DownloadTaskRow, error: str) -> None:
+        """Mirror a terminal download failure into the fallback trail.
+
+        The health page shows these rows next to the link-out results, so a
+        track that never reached the library can be explained without digging
+        through container logs.
+        """
+        track = await self.get_track(task.library_track_id)
+        await self.record_fallback_event(
+            task_id=task.id,
+            track_id=task.library_track_id,
+            title=track.title if track is not None else "",
+            artist=track.artist if track is not None else "",
+            source_id=task.selected_source_id,
+            trigger="download_failed",
+            outcome="failed",
+            detail=error,
+            page_url=task.source_page_url,
+        )
 
     async def schedule_retry(
         self, task: DownloadTaskRow, error: str, next_retry_at: datetime
@@ -539,6 +581,67 @@ class LibraryRepository:
             .limit(limit)
         )
         return [self.task_payload(task, track) for task, track in result.all()]
+
+    async def record_fallback_event(
+        self,
+        *,
+        task_id: str | None,
+        track_id: str | None,
+        title: str,
+        artist: str,
+        source_id: str | None,
+        trigger: str,
+        outcome: str,
+        detail: str | None = None,
+        share_url: str | None = None,
+        page_url: str | None = None,
+    ) -> None:
+        """Append one row to the fallback trail; the caller owns the commit."""
+        self._session.add(
+            FallbackEventRow(
+                id=str(uuid.uuid4()),
+                task_id=task_id,
+                track_id=track_id,
+                title=(title or "")[:512],
+                artist=(artist or "")[:512],
+                source_id=source_id,
+                trigger=trigger,
+                outcome=outcome,
+                detail=detail[:1000] if detail else None,
+                share_url=share_url,
+                page_url=page_url,
+                created_at=_now(),
+            )
+        )
+
+    async def list_fallback_events(
+        self,
+        limit: int = 20,
+        *,
+        trigger: str | None = None,
+        include_share_url: bool = False,
+    ) -> list[dict[str, Any]]:
+        stmt = (
+            select(FallbackEventRow)
+            .order_by(FallbackEventRow.created_at.desc())
+            .limit(max(1, limit))
+        )
+        if trigger:
+            stmt = stmt.where(FallbackEventRow.trigger == trigger)
+        result = await self._session.execute(stmt)
+        return [
+            _fallback_event_payload(row, include_share_url=include_share_url)
+            for row in result.scalars().all()
+        ]
+
+    async def fallback_event_counts(self) -> dict[str, int]:
+        """Counts keyed ``"{trigger}:{outcome}"`` so callers can slice either axis."""
+        result = await self._session.execute(
+            select(FallbackEventRow.trigger, FallbackEventRow.outcome, func.count()).group_by(
+                FallbackEventRow.trigger, FallbackEventRow.outcome
+            )
+        )
+        return {f"{trigger}:{outcome}": int(count) for trigger, outcome, count in result.all()}
 
     async def summary(self) -> dict[str, Any]:
         result = await self._session.execute(

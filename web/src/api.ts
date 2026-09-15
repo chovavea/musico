@@ -4,6 +4,7 @@ import type {
   DownloadSummary,
   DownloadTask,
   Envelope,
+  FallbackResolution,
   HealthPayload,
   LibraryAsset,
   LatestBoard,
@@ -259,6 +260,14 @@ export function listDownloads(): Promise<Envelope<{ items: DownloadTask[] }>> {
 
 export function retryDownload(id: string): Promise<Envelope<DownloadTask>> {
   return sendJson(`/api/v1/downloads/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+/**
+ * Link-out fallback for a failed download. The backend only reads pages; the
+ * returned ``url`` is an external share page the caller navigates to.
+ */
+export function resolveDownloadFallback(id: string): Promise<Envelope<FallbackResolution>> {
+  return sendJson(`/api/v1/downloads/${encodeURIComponent(id)}/fallback`, { method: "POST" });
 }
 
 export function listLibrary(): Promise<Envelope<{ items: LibraryAsset[] }>> {

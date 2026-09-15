@@ -319,6 +319,14 @@ def build_router() -> APIRouter:
             return fail(40401, "download task not found", status_code=404)
         return ok(task)
 
+    @router.post("/downloads/{task_id}/fallback")
+    async def download_fallback(task_id: str, request: Request) -> Any:
+        """Link-out fallback for a failed download: reads pages, downloads nothing."""
+        result = await request.app.state.fallback_service.resolve_task(task_id)
+        if result is None:
+            return fail(40401, "download task not found", status_code=404)
+        return ok(result)
+
     @router.get("/library")
     async def library(request: Request) -> Any:
         return ok({"items": await request.app.state.download_service.assets()})
@@ -361,10 +369,14 @@ def build_router() -> APIRouter:
 
     @router.get("/health")
     async def health(request: Request) -> Any:
+        settings = request.app.state.settings
         data = await build_health(
             request.app.state.session_factory,
             request.app.state.board_specs,
-            request.app.state.settings,
+            settings,
+            fallback=await request.app.state.fallback_service.health(
+                settings.fallback_event_limit
+            ),
         )
         return ok(data)
 

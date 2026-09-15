@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     )
     download_poll_sec: float = Field(default=1.0, alias="DOWNLOAD_POLL_SEC")
     download_lease_sec: int = Field(default=60, alias="DOWNLOAD_LEASE_SEC")
+    # Link-out fallback: when every download source fails, the browser is sent to
+    # a Quark share page and the user finishes the transfer there.  The site
+    # address never enters the repository, so it lives in the untracked .env.
+    fallback_base_url: str = Field(default="", alias="MUSICO_FALLBACK_BASE_URL")
+    fallback_extra_hosts: str = Field(default="", alias="MUSICO_FALLBACK_EXTRA_HOSTS")
+    fallback_timeout_sec: float = Field(default=15.0, alias="FALLBACK_TIMEOUT_SEC")
+    fallback_positive_ttl_sec: int = Field(default=604800, alias="FALLBACK_POSITIVE_TTL_SEC")
+    fallback_negative_ttl_sec: int = Field(default=300, alias="FALLBACK_NEGATIVE_TTL_SEC")
+    fallback_event_limit: int = Field(default=20, alias="FALLBACK_EVENT_LIMIT")
 
     @property
     def download_roots(self) -> list[Path]:
@@ -95,6 +104,24 @@ def export_env_file(path: Path | None = None) -> None:
             if not key:
                 continue
             os.environ.setdefault(key, value.strip().strip('"').strip("'"))
+    _ensure_local_database_url()
+
+
+def _ensure_local_database_url() -> None:
+    """Compose DATABASE_URL from POSTGRES_* when .env omits it (Docker injects it)."""
+    if os.environ.get("DATABASE_URL"):
+        return
+    user = os.environ.get("POSTGRES_USER")
+    password = os.environ.get("POSTGRES_PASSWORD", "")
+    db = os.environ.get("POSTGRES_DB")
+    if not user or not db:
+        return
+    from urllib.parse import quote
+
+    auth = quote(user, safe="")
+    if password:
+        auth = f"{auth}:{quote(password, safe='')}"
+    os.environ["DATABASE_URL"] = f"postgresql+psycopg://{auth}@127.0.0.1:5432/{quote(db, safe='')}"
 
 
 @lru_cache

@@ -9,6 +9,47 @@ import { useHealthStore } from "../stores/health";
 
 const healthStore = useHealthStore();
 const { payload, error, loading, lastRefreshedAt } = storeToRefs(healthStore);
+
+// 下载兜底目前只读展示：它记录下载失败与兜底跳转结果，但不参与 healthScore。
+// TODO(health-score): 后续把兜底当成一个“源”纳入评分（见 ../lib/healthScore.ts）。
+const fallback = computed(() => payload.value?.fallback ?? null);
+const fallbackSuccessCount = computed(
+  () => fallback.value?.counts["fallback_request:jumped"] ?? 0,
+);
+const fallbackLastFailure = computed(() =>
+  fallback.value?.last_failure_at ? eventTime(fallback.value.last_failure_at) : "无记录",
+);
+const OUTCOME_LABELS: Record<string, string> = {
+  jumped: "已跳转网盘",
+  no_wav: "无 WAV 音质",
+  not_found: "站点无此曲",
+  unreachable: "站点不可达",
+  no_share_link: "未取到分享链接",
+  disabled: "兜底未启用",
+  not_failed: "任务未失败",
+  failed: "下载失败",
+};
+
+function outcomeLabel(outcome: string): string {
+  return OUTCOME_LABELS[outcome] ?? outcome;
+}
+
+function outcomeClass(outcome: string): string {
+  return outcome === "jumped" ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500";
+}
+
+// 兜底事件是「失败记录」而不是榜单更新，用绝对时间更贴切。
+function eventTime(iso: string): string {
+  const stamp = Date.parse(iso);
+  if (Number.isNaN(stamp)) return "-";
+  return new Date(stamp).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 const statusLabel = computed(() => {
   const status = payload.value?.status;
   if (status === "ready") return { text: "就绪", klass: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300" };
@@ -112,5 +153,73 @@ onMounted(async () => {
         <p class="mt-4 text-sm text-zinc-500">正在读取各榜健康状态</p>
       </article>
     </div>
+
+    <!-- 下载兜底只读视图：只展示失败与跳转结果。
+         TODO(health-score): 后续把兜底当成一个“源”纳入 healthScore 评分。 -->
+    <article
+      v-if="fallback"
+      class="mt-6 rounded-2xl bg-white p-4 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-white/10"
+    >
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="font-medium">下载兜底</div>
+          <div class="mt-1 text-xs text-secondary">
+            {{ fallback.source_name }}：下载失败时跳到外部网盘分享页，由用户自行下载
+          </div>
+        </div>
+        <span
+          class="shrink-0 rounded-full px-3 py-1 text-xs"
+          :class="
+            fallback.enabled
+              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+              : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300'
+          "
+        >
+          {{ fallback.enabled ? "已启用" : "未启用" }}
+        </span>
+      </div>
+      <dl class="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+        <div>
+          <dt class="text-xs text-secondary">下载失败</dt>
+          <dd>{{ fallback.download_failed_total }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs text-secondary">兜底成功</dt>
+          <dd>{{ fallbackSuccessCount }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs text-secondary">连续失败</dt>
+          <dd>{{ fallback.consecutive_failures }}</dd>
+        </div>
+        <div>
+          <dt class="text-xs text-secondary">最近失败</dt>
+          <dd>{{ fallbackLastFailure }}</dd>
+        </div>
+      </dl>
+      <ul v-if="fallback.events.length" class="mt-3 space-y-2">
+        <li
+          v-for="event in fallback.events"
+          :key="event.id"
+          class="flex items-start justify-between gap-3 rounded-xl bg-zinc-50 px-3 py-2 dark:bg-white/5"
+        >
+          <div class="min-w-0">
+            <div class="truncate text-sm">
+              {{ event.title || "未知歌曲" }}
+              <span v-if="event.artist" class="text-secondary">· {{ event.artist }}</span>
+            </div>
+            <div class="mt-0.5 truncate text-xs text-secondary">
+              {{ event.detail || event.trigger }}
+            </div>
+          </div>
+          <div class="shrink-0 text-right">
+            <div class="text-sm" :class="outcomeClass(event.outcome)">
+              {{ outcomeLabel(event.outcome) }}
+            </div>
+            <div class="mt-0.5 text-xs text-secondary">{{ eventTime(event.created_at) }}</div>
+          </div>
+        </li>
+      </ul>
+      <p v-else class="mt-3 text-sm text-secondary">还没有兜底记录</p>
+    </article>
   </section>
 </template>
