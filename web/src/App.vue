@@ -239,7 +239,7 @@ onUnmounted(() => {
         </RouterLink>
 
         <div class="flex min-w-0 items-center justify-end gap-1">
-          <nav class="hidden items-center md:flex" aria-label="主要导航">
+          <nav class="hidden max-w-full items-center overflow-x-auto md:flex" aria-label="主要导航">
             <RouterLink to="/" :class="navClass(route.name === 'overview')">总览</RouterLink>
             <RouterLink
               v-for="board in navBoards"
@@ -341,14 +341,14 @@ onUnmounted(() => {
         </div>
 
         <nav
-          class="col-span-2 grid gap-1 rounded-full bg-zinc-200/80 p-1 text-zinc-700 md:hidden dark:bg-zinc-800 dark:text-zinc-200"
-          :style="{ gridTemplateColumns: `repeat(${Math.max(1, navBoards.length + 1)}, minmax(0, 1fr))` }"
+          class="col-span-2 flex gap-1 overflow-x-auto rounded-full bg-zinc-200/80 p-1 text-zinc-700 md:hidden dark:bg-zinc-800 dark:text-zinc-200"
           aria-label="主要导航"
         >
-          <RouterLink to="/" :class="navClass(route.name === 'overview')">总览</RouterLink>
+          <RouterLink to="/" class="min-w-fit flex-1" :class="navClass(route.name === 'overview')">总览</RouterLink>
           <RouterLink
             v-for="board in navBoards"
             :key="board.platform"
+            class="min-w-fit flex-1"
             :to="navTo(board.id)"
             :class="navClass(currentChartPlatform === board.platform)"
           >

@@ -26,8 +26,7 @@ const overviewSources = computed(() =>
     .filter(
       (item, index, items) =>
         items.findIndex((candidate) => candidate.platform === item.platform) === index,
-    )
-    .slice(0, 3),
+    ),
 );
 
 const columns = computed(() =>
