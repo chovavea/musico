@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from hashlib import sha256
 
 from app.domain.models import TrackRef
 from app.domain.zh_t2s import fold_traditional
+
+_BRACKETS_RE = re.compile(r"[\(（][^)）]*[\)）]|[\[【][^\]】]*[\]】]")
 
 
 def normalize_text(value: str | None) -> str:
@@ -110,7 +113,9 @@ def track_match_score(left: TrackRef, right: TrackRef) -> float:
         return 1.0
     if title_match_key(left.title) != title_match_key(right.title):
         return 0.0
-    if artist_match_key(left.artist) != artist_match_key(right.artist):
+    # Featured / split credits still match when they share a performer. First-artist
+    # equality is kept for library identity (``is_same_recording``), not auto-match.
+    if not artists_overlap(left.artist, right.artist):
         return 0.0
     if left.duration_ms and right.duration_ms:
         delta = abs(left.duration_ms - right.duration_ms)
@@ -122,6 +127,73 @@ def track_match_score(left: TrackRef, right: TrackRef) -> float:
 
 def is_auto_match(left: TrackRef, right: TrackRef) -> bool:
     return track_match_score(left, right) >= 0.9
+
+
+def loose_title_key(value: str | None) -> str:
+    """Title key with every parenthetical alias stripped, not only live/remix tags."""
+    return fold_traditional(normalize_text(_BRACKETS_RE.sub(" ", value or "")))
+
+
+def loose_artist_names(value: str | None) -> set[str]:
+    """Artist tokens after dropping ``(에스파)``-style aliases that block overlap."""
+    return folded_artist_names(_BRACKETS_RE.sub(" ", value or ""))
+
+
+def loose_artists_overlap(left: str | None, right: str | None) -> bool:
+    return bool(loose_artist_names(left) & loose_artist_names(right))
+
+
+def fuzzy_title_score(left: str | None, right: str | None) -> float:
+    origin = loose_title_key(left)
+    candidate = loose_title_key(right)
+    if not origin or not candidate:
+        return 0.0
+    if origin == candidate:
+        return 1.0
+    shorter, longer = (origin, candidate) if len(origin) <= len(candidate) else (candidate, origin)
+    if shorter in longer:
+        return 0.9 * (len(shorter) / len(longer))
+    return SequenceMatcher(None, origin, candidate).ratio()
+
+
+def is_fuzzy_preview_match(origin: TrackRef, candidate: TrackRef) -> bool:
+    """Last-resort listen match: prefer playing something over a perfect recording.
+
+    Parenthetical aliases, live/studio tags and duration are ignored. A shared
+    artist still ranks higher at the call site, but title similarity alone is
+    enough once the strict ladder has already missed.
+    """
+    if origin.isrc and candidate.isrc and origin.isrc.casefold() == candidate.isrc.casefold():
+        return True
+    origin_key = loose_title_key(origin.title)
+    candidate_key = loose_title_key(candidate.title)
+    if not _title_long_enough(origin_key) or not _title_long_enough(candidate_key):
+        return False
+    if origin_key == candidate_key:
+        return True
+    shorter, longer = (
+        (origin_key, candidate_key)
+        if len(origin_key) <= len(candidate_key)
+        else (candidate_key, origin_key)
+    )
+    if shorter in longer and len(shorter) / len(longer) >= 0.45:
+        return True
+    return SequenceMatcher(None, origin_key, candidate_key).ratio() >= 0.6
+
+
+def fuzzy_preview_rank(origin: TrackRef, candidate: TrackRef) -> tuple[int, float]:
+    """Prefer a shared performer, then the closer title, when several fuzzy hits exist."""
+    overlap = 1 if loose_artists_overlap(origin.artist, candidate.artist) else 0
+    return (overlap, fuzzy_title_score(origin.title, candidate.title))
+
+
+def _title_long_enough(key: str) -> bool:
+    if not key:
+        return False
+    cjk = sum(1 for char in key if "\u4e00" <= char <= "\u9fff")
+    if cjk:
+        return cjk >= 2
+    return len(key) >= 4
 
 
 def is_same_recording(left: TrackRef, right: TrackRef) -> bool:

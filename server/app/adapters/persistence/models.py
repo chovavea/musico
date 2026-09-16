@@ -281,7 +281,7 @@ class PreviewEventRow(LibraryBase):
 
 
 class PreviewSourceStatRow(LibraryBase):
-    """Aggregated per-platform-pair playability used to rank cross-platform targets."""
+    """Aggregated source playability; qualified target ids cover T3/T4/T7."""
 
     __tablename__ = "preview_source_stat"
     __table_args__ = ({"schema": LIBRARY_SCHEMA},)

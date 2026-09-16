@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     staleness_multiplier: int = Field(default=2, alias="STALENESS_MULTIPLIER")
     preview_min_interval_sec: float = Field(default=0.1, alias="PREVIEW_MIN_INTERVAL_SEC")
     preview_cross_platform: bool = Field(default=True, alias="PREVIEW_CROSS_PLATFORM")
-    preview_match_min_score: float = Field(default=0.94, alias="PREVIEW_MATCH_MIN_SCORE")
+    preview_match_min_score: float = Field(default=0.9, alias="PREVIEW_MATCH_MIN_SCORE")
     preview_max_candidates: int = Field(default=2, alias="PREVIEW_MAX_CANDIDATES")
     # One budget for the whole cross-platform attempt, including a late audio open.
     # Search and parse calls are not capped individually, so this is the only limit
@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     preview_call_timeout_sec: float = Field(default=60.0, alias="PREVIEW_CALL_TIMEOUT_SEC")
     preview_negative_ttl_sec: int = Field(default=180, alias="PREVIEW_NEGATIVE_TTL_SEC")
     preview_positive_ttl_sec: int = Field(default=600, alias="PREVIEW_POSITIVE_TTL_SEC")
+    preview_adaptive_order: bool = Field(default=True, alias="PREVIEW_ADAPTIVE_ORDER")
+    preview_explore_weight: float = Field(
+        default=0.08, ge=0.0, le=1.0, alias="PREVIEW_EXPLORE_WEIGHT"
+    )
+    preview_decay_half_life_sec: float = Field(
+        default=259_200.0, gt=0.0, alias="PREVIEW_DECAY_HALF_LIFE_SEC"
+    )
+    preview_hedge_enabled: bool = Field(default=True, alias="PREVIEW_HEDGE_ENABLED")
+    preview_hedge_min_delay_sec: float = Field(
+        default=0.4, gt=0.0, alias="PREVIEW_HEDGE_MIN_DELAY_SEC"
+    )
+    preview_hedge_max_delay_sec: float = Field(
+        default=1.5, gt=0.0, alias="PREVIEW_HEDGE_MAX_DELAY_SEC"
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     boards_yaml: Path = Field(default=Path("/app/configs/boards.yaml"), alias="BOARDS_YAML")
     http_timeout_sec: float = Field(default=15.0, alias="HTTP_TIMEOUT_SEC")
@@ -68,6 +82,10 @@ class Settings(BaseSettings):
     fallback_positive_ttl_sec: int = Field(default=604800, alias="FALLBACK_POSITIVE_TTL_SEC")
     fallback_negative_ttl_sec: int = Field(default=300, alias="FALLBACK_NEGATIVE_TTL_SEC")
     fallback_event_limit: int = Field(default=20, alias="FALLBACK_EVENT_LIMIT")
+    listen_flmp3_base_url: str = Field(default="", alias="MUSICO_LISTEN_FLMP3_BASE_URL")
+    listen_flmp3_extra_hosts: str = Field(default="", alias="MUSICO_LISTEN_FLMP3_EXTRA_HOSTS")
+    listen_gequbao_base_url: str = Field(default="", alias="MUSICO_LISTEN_GEQUBAO_BASE_URL")
+    listen_gequbao_extra_hosts: str = Field(default="", alias="MUSICO_LISTEN_GEQUBAO_EXTRA_HOSTS")
 
     @model_validator(mode="after")
     def _fill_database_url(self) -> "Settings":

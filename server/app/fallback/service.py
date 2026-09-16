@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, Protocol
 
 import httpx
@@ -12,7 +13,7 @@ from app.adapters.persistence.library_repository import LibraryRepository
 from app.adapters.persistence.models import DownloadTaskRow, LibraryTrackRow
 from app.domain.matching import track_key
 from app.domain.models import TrackRef
-from app.fallback.sonoma import FallbackLink, SonomaFallback, UrlGuard
+from app.fallback.sonoma import FallbackLink, PreviewClip, SonomaFallback, UrlGuard
 from app.settings import Settings
 
 log = structlog.get_logger(__name__)
@@ -21,6 +22,8 @@ SOURCE_ID = "sonoma"
 SOURCE_NAME = "Sonoma"
 _POSITIVE_OUTCOMES = frozenset({"jumped"})
 _CACHE_LIMIT = 512
+_ACTIVE_DOWNLOAD = frozenset({"resolving", "queued", "downloading", "retrying"})
+_WAIT_ACTIVE_SEC = 45.0
 
 
 class Resolver(Protocol):
@@ -28,12 +31,11 @@ class Resolver(Protocol):
 
 
 class FallbackService:
-    """Link-out fallback: only ever runs after a download task reached ``failed``.
+    """Site used after a download fails, and as the last listen tier.
 
-    The site's WAV uploads live behind a Quark share link, so nothing is
-    downloaded here; the browser is handed the share URL instead.  Results are
-    cached in-process (success long, failure short) and every answer is recorded
-    for the health page.
+    WAV downloads are a Quark share handoff. The same song page also embeds a
+    short in-page clip used by the preview ladder (T4) when official and
+    download-source streams are unavailable.
     """
 
     def __init__(
@@ -44,11 +46,13 @@ class FallbackService:
         *,
         resolver: Resolver | None = None,
         url_guard: UrlGuard | None = None,
+        wait_active_sec: float | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._resolver = resolver or _build_resolver(client, settings, url_guard)
+        self._wait_active_sec = _WAIT_ACTIVE_SEC if wait_active_sec is None else wait_active_sec
 
     @property
     def enabled(self) -> bool:
@@ -59,6 +63,29 @@ class FallbackService:
         return SOURCE_NAME
 
     async def resolve_task(self, task_id: str) -> dict[str, Any] | None:
+        waiting = False
+        async with self._session_factory() as session:
+            task = await session.get(DownloadTaskRow, task_id)
+            if task is None:
+                return None
+            waiting = task.status in _ACTIVE_DOWNLOAD and self._wait_active_sec > 0
+            if task.status != "failed" and not waiting:
+                repo = LibraryRepository(session)
+                track_row = await repo.get_track(task.library_track_id)
+                track = _track_ref(track_row) if track_row is not None else None
+                return _payload(task_id, "not_failed", track=track)
+
+        if waiting:
+            task = await self._wait_until_terminal(task_id)
+            if task is None:
+                return None
+            if task.status != "failed":
+                async with self._session_factory() as session:
+                    repo = LibraryRepository(session)
+                    track_row = await repo.get_track(task.library_track_id)
+                    track = _track_ref(track_row) if track_row is not None else None
+                    return _payload(task_id, "not_failed", track=track)
+
         async with self._session_factory() as session:
             repo = LibraryRepository(session)
             task = await session.get(DownloadTaskRow, task_id)
@@ -101,6 +128,31 @@ class FallbackService:
                 cached=False,
             )
             return payload
+
+    async def _wait_until_terminal(self, task_id: str) -> DownloadTaskRow | None:
+        """Wait out an in-flight download so fallback is not a false miss."""
+        deadline = time.monotonic() + self._wait_active_sec
+        last: DownloadTaskRow | None = None
+        while time.monotonic() < deadline:
+            async with self._session_factory() as session:
+                last = await session.get(DownloadTaskRow, task_id)
+            if last is None:
+                return None
+            if last.status not in _ACTIVE_DOWNLOAD:
+                return last
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.4, remaining))
+        return last
+
+    async def iter_preview_clips(self, track: TrackRef, **kwargs: Any) -> AsyncIterator[PreviewClip]:
+        resolver = self._resolver
+        iterate = getattr(resolver, "iter_preview_clips", None) if resolver is not None else None
+        if iterate is None:
+            return
+        async for clip in iterate(track, **kwargs):
+            yield clip
 
     async def health(self, limit: int) -> dict[str, Any]:
         cap = max(1, limit)

@@ -30,6 +30,8 @@ from app.adapters.persistence.database import make_engine, make_session_factory
 from app.adapters.persistence.repository import ChartRepository
 from app.adapters.scheduler.jobs import ChartScheduler
 from app.download_sources.registry import load_download_sources
+from app.fallback.flmp3 import Flmp3Preview
+from app.fallback.gequbao import GequbaoPreview
 from app.fallback.service import FallbackService
 from app.logging import configure_logging
 from app.plugins._registry import load_registry
@@ -122,6 +124,38 @@ def _resolve_download_config(settings: Settings) -> dict[str, object]:
         return {}
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     return raw if isinstance(raw, dict) else {}
+
+
+def _build_flmp3_preview(client: httpx.AsyncClient, settings: Settings) -> Flmp3Preview | None:
+    base_url = str(settings.listen_flmp3_base_url or "").strip()
+    if not base_url:
+        return None
+    extra_hosts = tuple(
+        item.strip()
+        for item in str(settings.listen_flmp3_extra_hosts or "").split(",")
+        if item.strip()
+    )
+    try:
+        return Flmp3Preview(client, base_url, extra_hosts=extra_hosts)
+    except ValueError as exc:
+        log.warning("flmp3_preview_disabled", error=str(exc))
+        return None
+
+
+def _build_gequbao_preview(client: httpx.AsyncClient, settings: Settings) -> GequbaoPreview | None:
+    base_url = str(settings.listen_gequbao_base_url or "").strip()
+    if not base_url:
+        return None
+    extra_hosts = tuple(
+        item.strip()
+        for item in str(settings.listen_gequbao_extra_hosts or "").split(",")
+        if item.strip()
+    )
+    try:
+        return GequbaoPreview(client, base_url, extra_hosts=extra_hosts)
+    except ValueError as exc:
+        log.warning("gequbao_preview_disabled", error=str(exc))
+        return None
 
 
 def _run_alembic(settings: Settings) -> None:
@@ -231,6 +265,8 @@ def create_app(
     download_worker = DownloadWorker(session_factory, download_client, download_sources, settings)
     search_service = SearchService(registry, session_factory)
     fallback_service = FallbackService(session_factory, fallback_client, settings)
+    flmp3_preview = _build_flmp3_preview(fallback_client, settings)
+    gequbao_preview = _build_gequbao_preview(fallback_client, settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -243,7 +279,10 @@ def create_app(
         async with session_factory() as session:
             await ChartRepository(session).upsert_catalog(specs, registry.platform_names())
             await session.commit()
-        await prewarm_preview_stats(session_factory)
+        await prewarm_preview_stats(
+            session_factory,
+            half_life_sec=settings.preview_decay_half_life_sec,
+        )
         settings.music_library_dir.mkdir(parents=True, exist_ok=True)
         if scheduler is not None:
             scheduler.start()
@@ -284,6 +323,8 @@ def create_app(
     app.state.preview_client = preview_client
     app.state.cover_client = cover_client
     app.state.fallback_service = fallback_service
+    app.state.flmp3_preview = flmp3_preview
+    app.state.gequbao_preview = gequbao_preview
 
     dist = Path(__file__).resolve().parents[2] / "web" / "dist"
     if dist.is_dir():

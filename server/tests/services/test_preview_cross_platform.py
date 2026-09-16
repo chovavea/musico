@@ -385,6 +385,58 @@ async def test_the_next_platform_is_not_asked_once_one_plays(
     assert [event.tier for event in events] == ["T2"]
 
 
+async def test_a_slow_platform_is_hedged_by_the_next_one(
+    events: list[preview_telemetry.PreviewEvent],
+) -> None:
+    probe = Probe()
+    netease_search = CrossSearch([candidate("netease")], probe=probe, delay_sec=1)
+    qq_search = CrossSearch(
+        [
+            TrackRef(
+                platform="qqmusic",
+                external_id="002B0d2H4VRqQs",
+                title=QQ.title,
+                artist=QQ.artist,
+                duration_ms=320_400,
+            )
+        ],
+        platform="qqmusic",
+        probe=probe,
+    )
+    registry = two_platform_registry(
+        netease_search=netease_search,
+        qq_search=qq_search,
+        netease_preview=CrossPreview(),
+        qq_preview=CrossPreview("https://qqmusic.qq.com/preview.m4a", "medium"),
+    )
+    settings = SimpleNamespace(
+        preview_cross_platform=True,
+        preview_match_min_score=0.9,
+        preview_max_candidates=2,
+        preview_deadline_sec=5.0,
+        preview_negative_ttl_sec=180.0,
+        preview_positive_ttl_sec=600.0,
+        preview_hedge_enabled=True,
+        preview_hedge_min_delay_sec=0.05,
+        preview_hedge_max_delay_sec=0.05,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "qqmusic.qq.com":
+            return audio(request)
+        return httpx.Response(404)
+
+    async with client_for(registry, [], handler, settings=settings) as client:
+        response = await client.get(
+            "/api/v1/preview/origin/origin-1/stream",
+            params={"title": QQ.title, "artist": QQ.artist, "duration_ms": "320000"},
+        )
+    assert response.status_code == 200
+    assert "qqmusic" in probe.order
+    assert probe.peak == 2
+    assert events[0].source_platform == "qqmusic"
+
+
 async def test_learned_rate_decides_which_platform_is_asked_first(
     events: list[preview_telemetry.PreviewEvent],
 ) -> None:
@@ -587,7 +639,8 @@ async def test_a_slow_platform_is_abandoned_at_the_deadline_and_download_sources
     assert response.status_code == 200
     assert official.calls == []
     assert source.resolved == 1
-    assert [event.tier for event in events] == ["T3"]
+    assert [event.tier for event in events] == ["T2", "T3"]
+    assert events[0].error == "cross_platform_deadline_exceeded"
 
 
 async def test_a_deadline_is_not_remembered_as_unplayable(
@@ -674,6 +727,48 @@ async def test_platform_order_prefers_history_and_breaks_ties_by_id() -> None:
     assert warm.platforms == ["qqmusic", "netease"]
 
 
+async def test_platform_order_uses_first_byte_latency_when_rates_match() -> None:
+    registry = two_platform_registry(
+        netease_search=CrossSearch([]),
+        qq_search=CrossSearch([], platform="qqmusic"),
+        netease_preview=CrossPreview(),
+        qq_preview=CrossPreview(),
+    )
+    origin = QQ.model_copy(update={"platform": "origin"})
+    for _ in range(4):
+        preview_telemetry.RATES.record(
+            "origin", "netease", True, latency_ms=4_000
+        )
+        preview_telemetry.RATES.record(
+            "origin", "qqmusic", True, latency_ms=200
+        )
+
+    planner = PreviewPlanner(origin, registry, PreviewPolicy())
+
+    assert planner.platforms == ["qqmusic", "netease"]
+
+
+async def test_disabling_adaptive_order_keeps_the_cold_platform_order() -> None:
+    registry = two_platform_registry(
+        netease_search=CrossSearch([]),
+        qq_search=CrossSearch([], platform="qqmusic"),
+        netease_preview=CrossPreview(),
+        qq_preview=CrossPreview(),
+    )
+    origin = QQ.model_copy(update={"platform": "origin"})
+    for _ in range(4):
+        preview_telemetry.RATES.record("origin", "netease", False, latency_ms=4_000)
+        preview_telemetry.RATES.record("origin", "qqmusic", True, latency_ms=200)
+
+    planner = PreviewPlanner(
+        origin,
+        registry,
+        PreviewPolicy(adaptive_order=False),
+    )
+
+    assert planner.platforms == ["netease", "qqmusic"]
+
+
 def test_version_markers_only_flag_real_variants() -> None:
     assert version_markers("我不难过 (Live)") == frozenset({"live"})
     assert version_markers("我不难过（伴奏）") == frozenset({"伴奏"})
@@ -687,3 +782,25 @@ def test_isrc_match_skips_the_text_guards() -> None:
         update={"title": "我不难过 (Live)", "isrc": "cna231200001"}
     )
     assert is_cross_platform_match(origin, other, min_score=0.94) is True
+
+
+async def test_default_policy_keeps_a_featured_hit_without_duration() -> None:
+    origin = TrackRef(
+        platform="bilibili",
+        external_id="b1",
+        title="海屿你",
+        artist="Cole先生,马也_Crabbit",
+        duration_ms=240_000,
+    )
+    found = candidate(
+        "netease",
+        title="海屿你",
+        artist="马也_Crabbit",
+        duration_ms=None,
+        external_id="1888",
+    )
+    registry = registry_with(CrossSearch([found]), CrossPreview())
+    planner = PreviewPlanner(origin, registry, PreviewPolicy())
+    targets = await drain(planner)
+    assert [target.external_id for target in targets] == ["1888"]
+    assert targets[0].match_score == 0.9

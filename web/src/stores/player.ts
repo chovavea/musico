@@ -74,6 +74,8 @@ export const usePlayerStore = defineStore("player", {
     loadState: "idle" as "idle" | "loading" | "ready" | "cancelled" | "failed",
     wantsPlayback: false,
     officialTimer: null as ReturnType<typeof setTimeout> | null,
+    streamRetries: 0,
+    streamRetryTimer: null as ReturnType<typeof setTimeout> | null,
   }),
   getters: {
     canPreview: () => previewPlayable,
@@ -108,7 +110,23 @@ export const usePlayerStore = defineStore("player", {
         if (!sameAudioSource(audio, this.current, this.downloadOnly)) {
           return;
         }
-        this.failPlayback(this.playbackId);
+        this.recoverOrFail(this.playbackId);
+      });
+      audio.addEventListener("playing", () => {
+        if (
+          this.usingOfficial ||
+          !this.current ||
+          !this.wantsPlayback ||
+          !sameAudioSource(audio, this.current, this.downloadOnly)
+        ) {
+          return;
+        }
+        this.loading = false;
+        this.loadState = "ready";
+        this.playing = true;
+        this.failed = false;
+        this.failStreak = 0;
+        this.streamRetries = 0;
       });
       audio.addEventListener("timeupdate", () => {
         if (this.usingOfficial || !this.current ||
@@ -131,6 +149,12 @@ export const usePlayerStore = defineStore("player", {
       if (this.officialTimer !== null) {
         clearTimeout(this.officialTimer);
         this.officialTimer = null;
+      }
+    },
+    clearStreamRetry() {
+      if (this.streamRetryTimer !== null) {
+        clearTimeout(this.streamRetryTimer);
+        this.streamRetryTimer = null;
       }
     },
     waitForOfficial(playbackId: number) {
@@ -241,8 +265,10 @@ export const usePlayerStore = defineStore("player", {
     },
     start(item: RankItem) {
       this.clearOfficialTimer();
+      this.clearStreamRetry();
       this.playbackId += 1;
       this.failed = false;
+      this.streamRetries = 0;
       this.loading = true;
       this.loadState = "loading";
       this.wantsPlayback = true;
@@ -292,16 +318,49 @@ export const usePlayerStore = defineStore("player", {
             this.pause();
             return;
           }
-          this.failPlayback(playbackId);
+          if (error instanceof DOMException && error.name === "AbortError") {
+            return;
+          }
+          this.recoverOrFail(playbackId);
         },
       );
+    },
+    recoverOrFail(playbackId: number) {
+      if (this.playbackId !== playbackId || this.failed || !this.wantsPlayback) return;
+      const audio = this.audio;
+      // Tests and a true empty 404 fire error without a MediaError. A real
+      // browser that gave up while the adaptive backend ladder was still walking
+      // audio.error; replay the same proxy URL so a late clip can still play.
+      if (!audio?.error || this.streamRetries >= 2 || !this.current) {
+        this.failPlayback(playbackId);
+        return;
+      }
+      this.streamRetries += 1;
+      this.loading = true;
+      this.loadState = "loading";
+      this.playing = false;
+      this.clearStreamRetry();
+      this.streamRetryTimer = setTimeout(() => {
+        this.streamRetryTimer = null;
+        if (this.playbackId !== playbackId || !this.wantsPlayback || this.usingOfficial) {
+          return;
+        }
+        const item = this.current;
+        if (!item) {
+          this.failPlayback(playbackId);
+          return;
+        }
+        const element = this.ensureAudio();
+        element.src = streamUrl(item, this.downloadOnly);
+        this.playAudio(playbackId);
+      }, 400);
     },
     startFallback() {
       if (!this.current || !this.usingOfficial || !this.wantsPlayback) return;
       // Keep the same track and queue position. The SDK has already given up on
       // this platform, so let the backend walk its whole ladder: this platform's
-      // official preview, another platform's official preview, then the
-      // configured download sites. Never advance the queue on a failed source.
+      // official preview, another platform's official preview, download sites,
+      // then strict and fuzzy listen providers. Never advance on a failed source.
       this.currentTime = 0;
       this.duration = 0;
       this.startAudio(this.current);
@@ -333,9 +392,10 @@ export const usePlayerStore = defineStore("player", {
       }
     },
     pause() {
-      const cancelledLoading = this.loading;
+      const cancelledLoading = this.loading || this.loadState === "loading";
       this.playbackId += 1;
       this.clearOfficialTimer();
+      this.clearStreamRetry();
       this.wantsPlayback = false;
       this.loading = false;
       this.loadState = cancelledLoading ? "cancelled" : this.current ? "ready" : "idle";

@@ -8,6 +8,12 @@ import structlog
 from app.domain.matching import is_cross_platform_match, track_match_score
 from app.domain.models import TrackQuery, TrackRef
 from app.plugins._registry import PluginRecord, PluginRegistry
+from app.services.preview_ladder import (
+    AdaptiveTuning,
+    PreviewSource,
+    SourceKind,
+    order_sources,
+)
 from app.services.preview_telemetry import RATES, RateStore
 
 log = structlog.get_logger(__name__)
@@ -22,7 +28,7 @@ class PreviewPolicy:
     """Runtime knobs for borrowing a preview from another platform."""
 
     cross_platform: bool = True
-    match_min_score: float = 0.94
+    match_min_score: float = 0.9
     max_candidates: int = 2
     # One budget for the whole cross-platform attempt. Individual search / parse
     # calls are deliberately not capped: a slow answer is still a usable answer,
@@ -30,16 +36,41 @@ class PreviewPolicy:
     deadline_sec: float = 60.0
     negative_ttl_sec: float = 180.0
     positive_ttl_sec: float = 600.0
+    adaptive_order: bool = True
+    explore_weight: float = 0.08
+    decay_half_life_sec: float = 259_200.0
+    hedge_enabled: bool = True
+    hedge_min_delay_sec: float = 0.4
+    hedge_max_delay_sec: float = 1.5
 
     @classmethod
     def from_settings(cls, settings: object) -> PreviewPolicy:
+        hedge_min = max(0.05, float(getattr(settings, "preview_hedge_min_delay_sec", 0.4)))
+        hedge_max = max(
+            hedge_min,
+            float(getattr(settings, "preview_hedge_max_delay_sec", 1.5)),
+        )
         return cls(
             cross_platform=bool(getattr(settings, "preview_cross_platform", True)),
-            match_min_score=float(getattr(settings, "preview_match_min_score", 0.94)),
+            match_min_score=float(getattr(settings, "preview_match_min_score", 0.9)),
             max_candidates=int(getattr(settings, "preview_max_candidates", 2)),
             deadline_sec=float(getattr(settings, "preview_deadline_sec", 60.0)),
             negative_ttl_sec=float(getattr(settings, "preview_negative_ttl_sec", 180.0)),
             positive_ttl_sec=float(getattr(settings, "preview_positive_ttl_sec", 600.0)),
+            adaptive_order=bool(getattr(settings, "preview_adaptive_order", True)),
+            explore_weight=float(getattr(settings, "preview_explore_weight", 0.08)),
+            decay_half_life_sec=float(
+                getattr(settings, "preview_decay_half_life_sec", 259_200.0)
+            ),
+            hedge_enabled=bool(getattr(settings, "preview_hedge_enabled", True)),
+            hedge_min_delay_sec=hedge_min,
+            hedge_max_delay_sec=hedge_max,
+        )
+
+    def adaptive_tuning(self) -> AdaptiveTuning:
+        return AdaptiveTuning(
+            explore_weight=self.explore_weight,
+            half_life_sec=self.decay_half_life_sec,
         )
 
 
@@ -56,40 +87,49 @@ class PreviewTarget:
     quality_rank: int
 
 
-def platform_order_key(
-    record: PluginRecord, origin: TrackRef, rates: RateStore
-) -> tuple[float, str]:
-    """Order platforms by learned playability; the platform id only breaks ties.
-
-    There is deliberately no configured platform priority: a cold pair starts at
-    the same 0.5 prior for every platform, and history decides from there.
-    """
-    return (-rates.rate(origin.platform, record.plugin_id), record.plugin_id)
-
-
 def ordered_providers(
     track: TrackRef,
     registry: PluginRegistry,
     rates: RateStore = RATES,
+    *,
+    tuning: AdaptiveTuning | None = None,
+    adaptive: bool = True,
 ) -> list[PluginRecord]:
-    providers = [
-        record
-        for record in registry.plugins.values()
-        if record.plugin_id != track.platform
-        and record.search is not None
-        and record.preview is not None
-    ]
-    providers.sort(key=lambda record: platform_order_key(record, track, rates))
-    return providers
+    providers = sorted(
+        [
+            record
+            for record in registry.plugins.values()
+            if record.plugin_id != track.platform
+            and record.search is not None
+            and record.preview is not None
+        ],
+        key=lambda record: record.plugin_id,
+    )
+    by_id = {record.plugin_id: record for record in providers}
+    ranked = order_sources(
+        [
+            PreviewSource(
+                source_id=record.plugin_id,
+                kind=SourceKind.CROSS_OFFICIAL,
+                tier="T2",
+                order_index=index,
+            )
+            for index, record in enumerate(providers)
+        ],
+        track.platform,
+        rates=rates,
+        tuning=tuning,
+        adaptive=adaptive,
+    )
+    return [by_id[source.source_id] for source in ranked]
 
 
 class PreviewPlanner:
-    """Walk the other platforms one at a time, lazily.
+    """Walk the other platforms in adaptive order.
 
-    At most one outbound request is in flight: a platform is only searched after
-    the previous one failed to produce an audio stream, and the caller stops
-    pulling as soon as something plays. That keeps the request footprint small
-    and never fans out to several providers at once.
+    The HTTP layer may hedge a second provider after a short delay; this planner
+    still yields one platform at a time so each attempt stays independently
+    timed and cancellable.
     """
 
     def __init__(
@@ -103,7 +143,17 @@ class PreviewPlanner:
         self.track = track
         self.policy = policy
         self.rates = rates
-        self.providers = ordered_providers(track, registry, rates) if policy.cross_platform else []
+        self.providers = (
+            ordered_providers(
+                track,
+                registry,
+                rates,
+                tuning=policy.adaptive_tuning(),
+                adaptive=policy.adaptive_order,
+            )
+            if policy.cross_platform
+            else []
+        )
         self.contacted: list[str] = []
         self.attempted = False
         self.current_platform: str | None = None
@@ -120,11 +170,15 @@ class PreviewPlanner:
     async def iter_targets(self) -> AsyncIterator[PreviewTarget]:
         for record in self.providers:
             self.current_platform = record.plugin_id
-            async for target in self._platform_targets(record):
+            async for target in self.iter_provider_targets(record):
                 self.attempted = True
                 yield target
 
-    async def _platform_targets(self, record: PluginRecord) -> AsyncIterator[PreviewTarget]:
+    async def iter_provider_targets(
+        self, record: PluginRecord
+    ) -> AsyncIterator[PreviewTarget]:
+        """Yield matched URLs from exactly one provider for attempt-level timing."""
+        self.current_platform = record.plugin_id
         search, preview = record.search, record.preview
         if search is None or preview is None:  # pragma: no cover - filtered above
             return

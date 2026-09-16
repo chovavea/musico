@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.adapters.persistence.models import PreviewEventRow, PreviewSourceStatRow
@@ -18,63 +19,167 @@ _DEFAULT_RATE = 0.5
 _MIN_SAMPLES = 3
 _STATS_WINDOW_DAYS = 7
 _EVENT_RETENTION_DAYS = 30
+_DEFAULT_HALF_LIFE_SEC = 259_200.0
+_STAT_TIERS = frozenset({"T2", "T3", "T4", "T5", "T6", "T7"})
 
 
 @dataclass
 class _Counts:
-    success: int = 0
-    failure: int = 0
+    success: float = 0.0
+    failure: float = 0.0
+    latency_total_ms: float = 0.0
+    latency_samples: float = 0.0
+    updated_at: float = field(default_factory=time.monotonic)
 
     @property
-    def total(self) -> int:
+    def total(self) -> float:
         return self.success + self.failure
 
-    def rate(self) -> float:
-        return (self.success + 1) / (self.total + 2)
+    def decay(self, now: float, half_life_sec: float) -> None:
+        elapsed = max(0.0, now - self.updated_at)
+        # Sub-second decay only turns exact sample thresholds (for example three
+        # fresh failures) into 2.999999 without adding meaningful recency.
+        if elapsed >= 1.0 and half_life_sec > 0:
+            factor = math.exp2(-elapsed / half_life_sec)
+            self.success *= factor
+            self.failure *= factor
+            self.latency_total_ms *= factor
+            self.latency_samples *= factor
+        self.updated_at = now
+
+    def rate(self, prior: float) -> float:
+        return (self.success + prior * 2.0) / (self.total + 2.0)
+
+    def latency(self, prior_ms: float) -> float:
+        if self.latency_samples <= 0:
+            return prior_ms
+        return self.latency_total_ms / self.latency_samples
 
 
 class RateStore:
-    """Smoothed playability for each (origin, target) platform pair.
+    """Recent playability and attempt cost for each ``(origin, source)`` pair.
 
-    The estimate is a Beta posterior ``(success + 1) / (total + 2)``, so an
-    unseen pair starts at 0.5 and no platform is privileged by configuration.
-    Pairs without enough samples fall back to the target platform overall and
-    then to the global average.
+    Counts and latency samples decay toward their priors, so a transient outage
+    cannot permanently bury a recovered source. Plain target ids are the legacy
+    T2 namespace and retain pair -> target -> global fallback. Other tiers use a
+    qualified key and only fall back to the same source across origin platforms.
     """
 
-    def __init__(self, min_samples: int = _MIN_SAMPLES) -> None:
+    def __init__(
+        self,
+        min_samples: int = _MIN_SAMPLES,
+        half_life_sec: float = _DEFAULT_HALF_LIFE_SEC,
+    ) -> None:
         self._min_samples = min_samples
+        self._half_life_sec = half_life_sec
         self._pairs: dict[tuple[str, str], _Counts] = {}
         self._targets: dict[str, _Counts] = {}
         self._global = _Counts()
 
-    def record(self, origin: str, target: str, ok: bool, *, samples: int = 1) -> None:
+    def configure(self, *, half_life_sec: float) -> None:
+        self._half_life_sec = half_life_sec
+
+    def record(
+        self,
+        origin: str,
+        target: str,
+        ok: bool,
+        *,
+        samples: float = 1.0,
+        latency_ms: int | float | None = None,
+        half_life_sec: float | None = None,
+    ) -> None:
+        if samples <= 0:
+            return
+        now = time.monotonic()
+        half_life = half_life_sec or self._half_life_sec
         for counts in (
             self._pairs.setdefault((origin, target), _Counts()),
             self._targets.setdefault(target, _Counts()),
             self._global,
         ):
+            counts.decay(now, half_life)
             if ok:
                 counts.success += samples
             else:
                 counts.failure += samples
+            if latency_ms is not None and latency_ms >= 0:
+                counts.latency_total_ms += float(latency_ms) * samples
+                counts.latency_samples += samples
 
-    def rate(self, origin: str, target: str) -> float:
-        for counts in (
-            self._pairs.get((origin, target)),
-            self._targets.get(target),
-            self._global,
-        ):
-            if counts is not None and counts.total >= self._min_samples:
-                return counts.rate()
-        return _DEFAULT_RATE
+    def rate(
+        self,
+        origin: str,
+        target: str,
+        *,
+        prior: float = _DEFAULT_RATE,
+        half_life_sec: float | None = None,
+    ) -> float:
+        half_life = half_life_sec or self._half_life_sec
+        for counts in self._fallback_counts(origin, target):
+            if counts is None:
+                continue
+            counts.decay(time.monotonic(), half_life)
+            if counts.total >= self._min_samples:
+                return counts.rate(prior)
+        return prior
 
     def target_rate(self, target: str) -> float:
         """Return the learned playability of a target without an origin platform."""
-        for counts in (self._targets.get(target), self._global):
-            if counts is not None and counts.total >= self._min_samples:
-                return counts.rate()
+        fallback = (
+            (self._targets.get(target), self._global)
+            if ":" not in target
+            else (self._targets.get(target),)
+        )
+        for counts in fallback:
+            if counts is None:
+                continue
+            counts.decay(time.monotonic(), self._half_life_sec)
+            if counts.total >= self._min_samples:
+                return counts.rate(_DEFAULT_RATE)
         return _DEFAULT_RATE
+
+    def latency(
+        self,
+        origin: str,
+        target: str,
+        *,
+        prior: float,
+        half_life_sec: float | None = None,
+    ) -> float:
+        half_life = half_life_sec or self._half_life_sec
+        prior_ms = max(0.0, prior * 1000.0)
+        for counts in self._fallback_counts(origin, target):
+            if counts is None:
+                continue
+            counts.decay(time.monotonic(), half_life)
+            if counts.latency_samples >= self._min_samples:
+                return counts.latency(prior_ms) / 1000.0
+        return prior_ms / 1000.0
+
+    def samples(
+        self,
+        origin: str,
+        target: str,
+        *,
+        half_life_sec: float | None = None,
+    ) -> float:
+        counts = self._pairs.get((origin, target)) or self._targets.get(target)
+        if counts is None:
+            return 0.0
+        counts.decay(time.monotonic(), half_life_sec or self._half_life_sec)
+        return counts.total
+
+    def total_samples(self, *, half_life_sec: float | None = None) -> float:
+        self._global.decay(time.monotonic(), half_life_sec or self._half_life_sec)
+        return self._global.total
+
+    def _fallback_counts(self, origin: str, target: str) -> tuple[_Counts | None, ...]:
+        pair = self._pairs.get((origin, target))
+        target_counts = self._targets.get(target)
+        if ":" in target:
+            return pair, target_counts
+        return pair, target_counts, self._global
 
     def clear(self) -> None:
         self._pairs.clear()
@@ -149,6 +254,19 @@ def cache_key(track: TrackRef) -> str:
     return f"{track.platform}:{track.external_id}"
 
 
+def source_stat_key(tier: str, source_id: str) -> str | None:
+    """Map stable tier semantics to an isolated statistics namespace."""
+    if tier == "T2":
+        return source_id
+    if tier == "T3":
+        return f"download:{source_id}"
+    if tier in {"T4", "T5", "T6"}:
+        return f"clip:{source_id}"
+    if tier == "T7":
+        return f"fuzzy:{source_id}"
+    return None
+
+
 @dataclass
 class PreviewEvent:
     track: TrackRef
@@ -169,8 +287,18 @@ async def publish(event: PreviewEvent, *, session_factory: object | None = None)
     was first resolved. Counting it again would let a single upstream success vote
     once per click, so it is logged but neither sampled nor written as a new row.
     """
-    if event.tier == "T2" and event.source_platform and not event.cached:
-        RATES.record(event.track.platform, event.source_platform, event.status == "ok")
+    stat_key = (
+        source_stat_key(event.tier, event.source_platform)
+        if event.source_platform is not None
+        else None
+    )
+    if stat_key is not None and not event.cached:
+        RATES.record(
+            event.track.platform,
+            stat_key,
+            event.status == "ok",
+            latency_ms=event.latency_ms,
+        )
     log.info(
         "preview_source_selected",
         origin_platform=event.track.platform,
@@ -207,32 +335,64 @@ async def publish(event: PreviewEvent, *, session_factory: object | None = None)
         log.warning("preview_event_write_failed", error_type=type(exc).__name__)
 
 
-async def prewarm(session_factory: object) -> None:
+async def prewarm(
+    session_factory: object,
+    *,
+    half_life_sec: float = _DEFAULT_HALF_LIFE_SEC,
+) -> None:
     """Seed the rate store from recent events and refresh the aggregate table."""
+    RATES.configure(half_life_sec=half_life_sec)
     since = datetime.now(UTC) - timedelta(days=_STATS_WINDOW_DAYS)
     try:
         async with session_factory() as session:  # type: ignore[operator]
             result = await session.execute(
                 select(
                     PreviewEventRow.origin_platform,
+                    PreviewEventRow.tier,
                     PreviewEventRow.source_platform,
-                    func.count().filter(PreviewEventRow.status == "ok"),
-                    func.count().filter(PreviewEventRow.status != "ok"),
-                    func.avg(PreviewEventRow.latency_ms),
+                    PreviewEventRow.status,
+                    PreviewEventRow.latency_ms,
+                    PreviewEventRow.created_at,
                 )
                 .where(
                     PreviewEventRow.created_at >= since,
-                    PreviewEventRow.tier == "T2",
+                    PreviewEventRow.tier.in_(_STAT_TIERS),
                     PreviewEventRow.source_platform.is_not(None),
                 )
-                .group_by(PreviewEventRow.origin_platform, PreviewEventRow.source_platform)
             )
             now = datetime.now(UTC)
-            for origin, target, success, failure, latency in result.all():
-                if target is None:
+            aggregates: dict[tuple[str, str], list[float]] = {}
+            for origin, tier, source, status, latency, created_at in result.all():
+                if source is None:
                     continue
-                RATES.record(str(origin), str(target), True, samples=int(success or 0))
-                RATES.record(str(origin), str(target), False, samples=int(failure or 0))
+                key = source_stat_key(str(tier), str(source))
+                if key is None:
+                    continue
+                observed_at = created_at
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=UTC)
+                age_sec = max(0.0, (now - observed_at).total_seconds())
+                weight = math.exp2(-age_sec / half_life_sec)
+                RATES.record(
+                    str(origin),
+                    key,
+                    str(status) == "ok",
+                    samples=weight,
+                    latency_ms=int(latency) if latency is not None else None,
+                    half_life_sec=half_life_sec,
+                )
+                aggregate = aggregates.setdefault((str(origin), key), [0.0, 0.0, 0.0, 0.0])
+                if str(status) == "ok":
+                    aggregate[0] += 1
+                else:
+                    aggregate[1] += 1
+                if latency is not None:
+                    aggregate[2] += int(latency)
+                    aggregate[3] += 1
+            for (origin, target), (success, failure, latency_total, latency_count) in (
+                aggregates.items()
+            ):
+                avg_latency = int(latency_total / latency_count) if latency_count else None
                 await session.execute(
                     pg_insert(PreviewSourceStatRow)
                     .values(
@@ -240,8 +400,10 @@ async def prewarm(session_factory: object) -> None:
                         target_platform=str(target),
                         success=int(success or 0),
                         failure=int(failure or 0),
-                        rate=RATES.rate(str(origin), str(target)),
-                        avg_latency_ms=int(latency) if latency is not None else None,
+                        rate=RATES.rate(
+                            str(origin), str(target), half_life_sec=half_life_sec
+                        ),
+                        avg_latency_ms=avg_latency,
                         updated_at=now,
                     )
                     .on_conflict_do_update(
@@ -252,8 +414,10 @@ async def prewarm(session_factory: object) -> None:
                         set_={
                             "success": int(success or 0),
                             "failure": int(failure or 0),
-                            "rate": RATES.rate(str(origin), str(target)),
-                            "avg_latency_ms": int(latency) if latency is not None else None,
+                            "rate": RATES.rate(
+                                str(origin), str(target), half_life_sec=half_life_sec
+                            ),
+                            "avg_latency_ms": avg_latency,
                             "updated_at": now,
                         },
                     )

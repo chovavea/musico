@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
+from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urljoin
 
 import httpx
@@ -18,10 +20,16 @@ from app.adapters.http.safety import (
     headers_for_redirect,
     host_matches,
 )
-from app.domain.matching import is_auto_match
+from app.domain.matching import is_auto_match, is_fuzzy_preview_match
 from app.domain.models import DownloadCandidate, TrackRef
 from app.download_sources.registry import DownloadSourceRecord, DownloadSourceRegistry
-from app.plugins._registry import PluginRegistry
+from app.plugins._registry import PluginRecord, PluginRegistry
+from app.services.preview_ladder import (
+    PreviewSource,
+    SourceKind,
+    order_sources,
+    score_source,
+)
 from app.services.preview_plan import PreviewPlanner, PreviewPolicy, PreviewTarget
 from app.services.preview_telemetry import (
     CACHE,
@@ -80,6 +88,21 @@ _PLATFORM_REFERERS = {
 }
 
 
+@dataclass
+class _AttemptResult:
+    response: StreamingResponse | None = None
+    source_external_id: str | None = None
+    match_score: float | None = None
+    target: PreviewTarget | None = None
+    error: str = "source_unavailable"
+
+
+@dataclass(frozen=True)
+class _AttemptSpec:
+    source: PreviewSource
+    run: Callable[[], Coroutine[Any, Any, _AttemptResult]]
+
+
 def host_allowed(host: str) -> bool:
     return host_matches(host, _ALLOWED_SUFFIXES)
 
@@ -105,14 +128,13 @@ async def stream_preview(
     *,
     download_only: bool = False,
 ) -> StreamingResponse:
-    """Serve a listening stream: local tier is chosen by the client.
+    """Serve a listening stream through fixed trust tiers and adaptive providers.
 
-    Order is fixed and each tier only runs when the previous one produced no
-    playable stream: T1 the track's own official preview, T2 another platform's
-    official preview, T3 the configured download sources (preview only, no
-    download task is created). Every step is serial: neither the next platform
-    nor the next download source is contacted until the current one failed to
-    play, so a single click never fans out into parallel upstream requests.
+    Tier order never changes: T1 own official, T2 cross-platform official, T3
+    download sources, T4 strict in-page clips, then T7 fuzzy clips. Providers
+    inside T2/T3/T4/T7 are ranked from recent playability and first-byte cost.
+    Within a tier the first provider starts immediately; a second may hedge
+    after a short delay. The first playable stream wins and the rest stop.
     """
     client: httpx.AsyncClient = request.app.state.preview_client
     registry: PluginRegistry = request.app.state.registry
@@ -121,81 +143,122 @@ async def stream_preview(
     call_timeout = preview_call_timeout(request)
     session_factory = getattr(request.app.state, "session_factory", None)
     started = time.monotonic()
-    event = PreviewEvent(track=track, tier="none", status="error", error="no_source")
+    events: list[PreviewEvent] = []
 
     if not download_only:
         response = await _official_stream(client, registry, track, range_header, call_timeout)
         if response is not None:
-            event.tier = "T1"
-            event.source_platform = track.platform
-            event.source_external_id = track.external_id
-            return await _finish(response, event, started, session_factory)
+            events.append(
+                PreviewEvent(
+                    track=track,
+                    tier="T1",
+                    status="ok",
+                    source_platform=track.platform,
+                    source_external_id=track.external_id,
+                )
+            )
+            return await _finish(response, events, started, session_factory)
 
         if policy.cross_platform:
-            response, target, cached = await _cross_platform_stream(
+            response, target, cached, attempts = await _cross_platform_stream(
                 client, registry, track, range_header, policy, session_factory, call_timeout
             )
+            events.extend(attempts)
             if response is not None and target is not None:
-                event.tier, event.match_score = "T2", target.match_score
-                event.source_platform = target.platform
-                event.source_external_id = target.external_id
-                event.cached = cached
-                return await _finish(response, event, started, session_factory)
-            event.error = "cross_platform_unavailable"
-        else:
-            event.error = "official_unavailable"
+                if cached:
+                    events.append(
+                        PreviewEvent(
+                            track=track,
+                            tier="T2",
+                            status="ok",
+                            source_platform=target.platform,
+                            source_external_id=target.external_id,
+                            match_score=target.match_score,
+                            cached=True,
+                        )
+                    )
+                return await _finish(response, events, started, session_factory)
 
     # Old stream URLs without metadata remain usable for official previews.
     # Never search by an opaque platform id or accidentally match an empty song.
     if not track.title.strip() or not track.artist.strip():
-        event.error = "track_metadata_missing"
+        events.append(
+            PreviewEvent(
+                track=track,
+                tier="none",
+                status="error",
+                error="track_metadata_missing",
+            )
+        )
         empty = StreamingResponse(iter(()), status_code=404)
-        return await _finish(empty, event, started, session_factory)
+        return await _finish(empty, events, started, session_factory)
 
     sources: DownloadSourceRegistry = request.app.state.download_sources
-    async for source, candidate in _download_candidates(sources, track, call_timeout):
-        try:
-            async with asyncio.timeout(call_timeout):
-                resolved = await source.source.resolve(candidate)
-                response = await _open_audio(
+    result, _winning_source = await _hedged_attempts(
+        _download_attempt_specs(
+            client,
+            _ordered_download_sources(sources, track, policy),
+            track,
+            range_header,
+            call_timeout,
+        ),
+        track,
+        policy,
+        events,
+        timeout_error="download_deadline_exceeded",
+    )
+    if result is not None and result.response is not None:
+        return await _finish(result.response, events, started, session_factory)
+
+    if not download_only:
+        for fuzzy in (False, True):
+            result, _winning_source = await _hedged_attempts(
+                _listen_attempt_specs(
                     client,
-                    resolved.url,
-                    resolved.headers,
-                    source.hosts,
-                    range_header=range_header,
-                    media_type=_AUDIO_FORMATS[candidate.quality.format.lower().lstrip(".")],
-                )
-                if response is not None:
-                    event.tier = "T3"
-                    event.source_platform = source.source_id
-                    event.source_external_id = candidate.source_track_id
-                    return await _finish(response, event, started, session_factory)
-        except Exception as exc:
-            log.info(
-                "download_preview_unavailable",
-                source_id=source.source_id,
-                error_type=type(exc).__name__,
+                    _ordered_listen_clip_providers(
+                        request, track, policy, fuzzy=fuzzy
+                    ),
+                    track,
+                    range_header,
+                    call_timeout,
+                    fuzzy=fuzzy,
+                ),
+                track,
+                policy,
+                events,
+                timeout_error="listen_deadline_exceeded",
             )
-    event.error = "download_unavailable"
+            if result is not None and result.response is not None:
+                return await _finish(result.response, events, started, session_factory)
+    events.append(
+        PreviewEvent(
+            track=track,
+            tier="none",
+            status="error",
+            error="download_unavailable" if download_only else "no_source",
+        )
+    )
     empty = StreamingResponse(iter(()), status_code=404)
-    return await _finish(empty, event, started, session_factory)
+    return await _finish(empty, events, started, session_factory)
 
 
 async def _finish(
     response: StreamingResponse,
-    event: PreviewEvent,
+    events: list[PreviewEvent],
     started: float,
     session_factory: object | None,
 ) -> StreamingResponse:
-    event.latency_ms = int((time.monotonic() - started) * 1000)
-    if event.tier != "none":
-        event.status, event.error = "ok", None
+    total_latency_ms = int((time.monotonic() - started) * 1000)
+    for event in events:
+        if event.latency_ms is None:
+            event.latency_ms = total_latency_ms
     # Diagnostics must not sit between the click and the first audio byte, so the
-    # write starts immediately but the response is not held back for it. The audit
-    # task is chained into the response background: it is awaited once the body is
-    # done so a failure is still visible, while a client that walks away mid-track
-    # leaves its row behind instead of losing it with the request.
-    task = asyncio.create_task(publish(event, session_factory=session_factory))
+    # writes start immediately but the response is not held back for them.
+    async def _publish_all() -> None:
+        for event in events:
+            await publish(event, session_factory=session_factory)
+
+    task = asyncio.create_task(_publish_all())
     task.add_done_callback(_log_publish_failure)
     prior = response.background
 
@@ -216,6 +279,167 @@ def _log_publish_failure(task: asyncio.Task[None]) -> None:
     error = task.exception()
     if error is not None:  # pragma: no cover - publish already swallows DB errors
         log.warning("preview_event_write_failed", error_type=type(error).__name__)
+
+
+def _attempt_event(
+    track: TrackRef,
+    tier: str,
+    source_id: str,
+    started: float,
+    *,
+    ok: bool,
+    source_external_id: str | None = None,
+    match_score: float | None = None,
+    error: str | None = None,
+) -> PreviewEvent:
+    return PreviewEvent(
+        track=track,
+        tier=tier,
+        status="ok" if ok else "error",
+        source_platform=source_id,
+        source_external_id=source_external_id,
+        match_score=match_score,
+        error=None if ok else error,
+        latency_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+def _hedge_delay(source: PreviewSource, track: TrackRef, policy: PreviewPolicy) -> float:
+    estimate = score_source(
+        source,
+        track.platform,
+        tuning=policy.adaptive_tuning(),
+    ).latency_sec
+    return min(
+        policy.hedge_max_delay_sec,
+        max(policy.hedge_min_delay_sec, estimate * 0.75),
+    )
+
+
+async def _discard_response(response: StreamingResponse) -> None:
+    if response.background is not None:
+        await response.background()
+
+
+async def _cancel_attempts(
+    running: dict[asyncio.Task[_AttemptResult], tuple[_AttemptSpec, float, int]],
+) -> None:
+    tasks = list(running)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, _AttemptResult) and outcome.response is not None:
+                await _discard_response(outcome.response)
+    running.clear()
+
+
+async def _hedged_attempts(
+    specs: list[_AttemptSpec],
+    track: TrackRef,
+    policy: PreviewPolicy,
+    events: list[PreviewEvent],
+    *,
+    timeout_error: str,
+) -> tuple[_AttemptResult | None, PreviewSource | None]:
+    """Run ordered providers with one delayed hedge and return the first audio."""
+    if not specs:
+        return None, None
+    running: dict[asyncio.Task[_AttemptResult], tuple[_AttemptSpec, float, int]] = {}
+    next_index = 0
+    next_launch_at = 0.0
+
+    def launch() -> None:
+        nonlocal next_index, next_launch_at
+        spec = specs[next_index]
+        started = time.monotonic()
+        task: asyncio.Task[_AttemptResult] = asyncio.create_task(spec.run())
+        running[task] = (spec, started, next_index)
+        next_index += 1
+        next_launch_at = started + _hedge_delay(spec.source, track, policy)
+
+    launch()
+    try:
+        while running:
+            wait_timeout: float | None = None
+            if (
+                policy.hedge_enabled
+                and next_index < len(specs)
+                and len(running) < 2
+            ):
+                wait_timeout = max(0.0, next_launch_at - time.monotonic())
+            done, _pending = await asyncio.wait(
+                running,
+                timeout=wait_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                launch()
+                continue
+
+            completed: list[tuple[int, _AttemptSpec, float, _AttemptResult]] = []
+            for task in done:
+                spec, started, index = running.pop(task)
+                try:
+                    result = task.result()
+                except asyncio.CancelledError:
+                    result = _AttemptResult(error=timeout_error)
+                except Exception as exc:
+                    result = _AttemptResult(error=type(exc).__name__)
+                completed.append((index, spec, started, result))
+            completed.sort(key=lambda item: item[0])
+
+            winner: tuple[_AttemptResult, PreviewSource] | None = None
+            for _index, spec, started, result in completed:
+                if result.response is not None and winner is None:
+                    events.append(
+                        _attempt_event(
+                            track,
+                            spec.source.tier,
+                            spec.source.source_id,
+                            started,
+                            ok=True,
+                            source_external_id=result.source_external_id,
+                            match_score=result.match_score,
+                        )
+                    )
+                    winner = result, spec.source
+                elif result.response is not None:
+                    await _discard_response(result.response)
+                else:
+                    events.append(
+                        _attempt_event(
+                            track,
+                            spec.source.tier,
+                            spec.source.source_id,
+                            started,
+                            ok=False,
+                            error=result.error,
+                        )
+                    )
+            if winner is not None:
+                return winner
+
+            if next_index < len(specs) and len(running) < 2:
+                # A known failure should not wait for the hedge timer.
+                launch()
+        return None, None
+    except asyncio.CancelledError:
+        for _task, (spec, started, _index) in running.items():
+            events.append(
+                _attempt_event(
+                    track,
+                    spec.source.tier,
+                    spec.source.source_id,
+                    started,
+                    ok=False,
+                    error=timeout_error,
+                )
+            )
+        raise
+    finally:
+        await _cancel_attempts(running)
 
 
 async def _official_stream(
@@ -253,63 +477,50 @@ async def _cross_platform_stream(
     track: TrackRef,
     range_header: str | None,
     policy: PreviewPolicy,
-    session_factory: object | None = None,
+    _session_factory: object | None = None,
     timeout: float = _CALL_TIMEOUT_SEC,
-) -> tuple[StreamingResponse | None, PreviewTarget | None, bool]:
+) -> tuple[
+    StreamingResponse | None,
+    PreviewTarget | None,
+    bool,
+    list[PreviewEvent],
+]:
     key = cache_key(track)
     if CACHE.negative(key):
-        return None, None, False
-    response: StreamingResponse | None = None
-    played: PreviewTarget | None = None
+        return None, None, False, []
     cached = CACHE.positive(key)
     if cached is not None:
         response = await _open_target(client, cached.platform, cached.url, range_header, timeout)
         if response is not None:
-            return response, _cached_target(track, cached), True
+            return response, _cached_target(track, cached), True, []
         # The stored URL is a signed link that expires before the entry does;
         # forgetting it here keeps later clicks from paying for the same dead
         # open before falling back to a fresh search.
         CACHE.invalidate_positive(key)
+    attempts: list[PreviewEvent] = []
     planner = PreviewPlanner(track, registry, policy)
-    error = "cross_platform_unavailable"
     timed_out = False
+    result: _AttemptResult | None = None
     try:
-        # One platform at a time: the next search only happens after the current
-        # one produced nothing that could be played.
         async with asyncio.timeout(policy.deadline_sec):
-            async for candidate in planner.iter_targets():
-                response = await _open_target(
-                    client, candidate.platform, candidate.url, range_header, timeout
-                )
-                if response is not None:
-                    played = candidate
-                    break
+            result, _winner = await _hedged_attempts(
+                _cross_platform_attempt_specs(
+                    client, planner, track, range_header, timeout
+                ),
+                track,
+                policy,
+                attempts,
+                timeout_error="cross_platform_deadline_exceeded",
+            )
     except TimeoutError:
         timed_out = True
-        error = "cross_platform_deadline_exceeded"
         log.info(
             "cross_platform_deadline_exceeded",
             origin_platform=track.platform,
             platform=planner.current_platform,
         )
-    # A platform that was asked and served nothing is evidence against that pair;
-    # without it the next click would keep ranking a dead combination by its
-    # cold-start prior. Searches that raised are skipped on purpose: a timeout or
-    # a network hiccup must not demote a platform that normally works.
-    for platform_id in planner.contacted:
-        if played is not None and platform_id == played.platform:
-            continue
-        await publish(
-            PreviewEvent(
-                track=track,
-                tier="T2",
-                status="error",
-                source_platform=platform_id,
-                error=error,
-            ),
-            session_factory=session_factory,
-        )
-    if played is not None and response is not None:
+    if result is not None and result.response is not None and result.target is not None:
+        played = result.target
         CACHE.store_positive(
             key,
             CachedTarget(
@@ -320,13 +531,13 @@ async def _cross_platform_stream(
             ),
             policy.positive_ttl_sec,
         )
-        return response, played, False
+        return result.response, played, False, attempts
     if not timed_out and (planner.searched or planner.attempted):
         # Nothing on the other platform is playable right now: remember briefly
         # instead of re-querying every platform on the next click. A deadline that
         # ran out mid-ladder proves nothing, so it is not remembered that way.
         CACHE.store_negative(key, policy.negative_ttl_sec)
-    return None, None, False
+    return None, None, False, attempts
 
 
 def _cached_target(track: TrackRef, cached: CachedTarget) -> PreviewTarget:
@@ -374,29 +585,157 @@ def _referer_headers(platform: str) -> dict[str, str]:
     return {"Referer": referer} if referer else {}
 
 
-async def _download_candidates(
-    sources: DownloadSourceRegistry, track: TrackRef, timeout: float
-) -> AsyncIterator[tuple[DownloadSourceRecord, DownloadCandidate]]:
-    """Walk the download sources one at a time, highest priority first.
+async def _try_cross_platform_provider(
+    client: httpx.AsyncClient,
+    planner: PreviewPlanner,
+    record: PluginRecord,
+    range_header: str | None,
+    timeout: float,
+) -> _AttemptResult:
+    async for candidate in planner.iter_provider_targets(record):
+        planner.attempted = True
+        response = await _open_target(
+            client, candidate.platform, candidate.url, range_header, timeout
+        )
+        if response is not None:
+            return _AttemptResult(
+                response=response,
+                source_external_id=candidate.external_id,
+                match_score=candidate.match_score,
+                target=candidate,
+            )
+    return _AttemptResult(error="cross_platform_unavailable")
 
-    A source is only searched after every source before it failed to produce
-    playable audio, so this tier never fans out into parallel upstream requests.
-    """
+
+def _cross_platform_attempt_specs(
+    client: httpx.AsyncClient,
+    planner: PreviewPlanner,
+    track: TrackRef,
+    range_header: str | None,
+    timeout: float,
+) -> list[_AttemptSpec]:
+    specs: list[_AttemptSpec] = []
+    for index, record in enumerate(planner.providers):
+        descriptor = PreviewSource(
+            source_id=record.plugin_id,
+            kind=SourceKind.CROSS_OFFICIAL,
+            tier="T2",
+            order_index=index,
+        )
+
+        async def run(current: PluginRecord = record) -> _AttemptResult:
+            return await _try_cross_platform_provider(
+                client, planner, current, range_header, timeout
+            )
+
+        specs.append(_AttemptSpec(source=descriptor, run=run))
+    return specs
+
+
+def _ordered_download_sources(
+    sources: DownloadSourceRegistry,
+    track: TrackRef,
+    policy: PreviewPolicy,
+) -> list[DownloadSourceRecord]:
     # An empty manifest allowlist must not turn this into a public URL proxy.
     enabled = [source for source in sources.enabled() if source.hosts]
-    for source in enabled:
+    by_id = {source.source_id: source for source in enabled}
+    ranked = order_sources(
+        [
+            PreviewSource(
+                source_id=source.source_id,
+                kind=SourceKind.DOWNLOAD,
+                tier="T3",
+                order_index=index,
+            )
+            for index, source in enumerate(enabled)
+        ],
+        track.platform,
+        tuning=policy.adaptive_tuning(),
+        adaptive=policy.adaptive_order,
+    )
+    return [by_id[source.source_id] for source in ranked]
+
+
+async def _download_source_candidates(
+    source: DownloadSourceRecord,
+    track: TrackRef,
+    timeout: float,
+) -> AsyncIterator[DownloadCandidate]:
+    """Search and rank candidates from exactly one download source."""
+    try:
+        async with asyncio.timeout(timeout):
+            found = await source.source.search(track)
+    except Exception as exc:
+        log.info(
+            "preview_search_unavailable",
+            source_id=source.source_id,
+            error_type=type(exc).__name__,
+        )
+        return
+    for candidate in _rank_candidates(source, found, track):
+        yield candidate
+
+
+async def _try_download_source(
+    client: httpx.AsyncClient,
+    source: DownloadSourceRecord,
+    track: TrackRef,
+    range_header: str | None,
+    timeout: float,
+) -> _AttemptResult:
+    async for candidate in _download_source_candidates(source, track, timeout):
         try:
             async with asyncio.timeout(timeout):
-                found = await source.source.search(track)
+                resolved = await source.source.resolve(candidate)
+                response = await _open_audio(
+                    client,
+                    resolved.url,
+                    resolved.headers,
+                    source.hosts,
+                    range_header=range_header,
+                    media_type=_AUDIO_FORMATS[
+                        candidate.quality.format.lower().lstrip(".")
+                    ],
+                )
         except Exception as exc:
             log.info(
-                "preview_search_unavailable",
+                "download_preview_unavailable",
                 source_id=source.source_id,
                 error_type=type(exc).__name__,
             )
             continue
-        for candidate in _rank_candidates(source, found, track):
-            yield source, candidate
+        if response is not None:
+            return _AttemptResult(
+                response=response,
+                source_external_id=candidate.source_track_id,
+            )
+    return _AttemptResult(error="download_unavailable")
+
+
+def _download_attempt_specs(
+    client: httpx.AsyncClient,
+    sources: list[DownloadSourceRecord],
+    track: TrackRef,
+    range_header: str | None,
+    timeout: float,
+) -> list[_AttemptSpec]:
+    specs: list[_AttemptSpec] = []
+    for index, source in enumerate(sources):
+        descriptor = PreviewSource(
+            source_id=source.source_id,
+            kind=SourceKind.DOWNLOAD,
+            tier="T3",
+            order_index=index,
+        )
+
+        async def run(current: DownloadSourceRecord = source) -> _AttemptResult:
+            return await _try_download_source(
+                client, current, track, range_header, timeout
+            )
+
+        specs.append(_AttemptSpec(source=descriptor, run=run))
+    return specs
 
 
 def _rank_candidates(
@@ -418,6 +757,134 @@ def _rank_candidates(
         )
     )
     return matching
+
+
+def _listen_clip_providers(request: Request) -> list[tuple[str, object]]:
+    providers: list[tuple[str, object]] = []
+    fallback = getattr(request.app.state, "fallback_service", None)
+    iterate = getattr(fallback, "iter_preview_clips", None) if fallback is not None else None
+    if iterate is not None:
+        providers.append(("sonoma", iterate))
+    flmp3 = getattr(request.app.state, "flmp3_preview", None)
+    iterate = getattr(flmp3, "iter_preview_clips", None) if flmp3 is not None else None
+    if iterate is not None:
+        providers.append(("flmp3", iterate))
+    gequbao = getattr(request.app.state, "gequbao_preview", None)
+    iterate = getattr(gequbao, "iter_preview_clips", None) if gequbao is not None else None
+    if iterate is not None:
+        providers.append(("gequbao", iterate))
+    return providers
+
+
+def _ordered_listen_clip_providers(
+    request: Request,
+    track: TrackRef,
+    policy: PreviewPolicy,
+    *,
+    fuzzy: bool,
+) -> list[tuple[str, object]]:
+    providers = _listen_clip_providers(request)
+    by_id = dict(providers)
+    kind = SourceKind.FUZZY_CLIP if fuzzy else SourceKind.CLIP
+    ranked = order_sources(
+        [
+            PreviewSource(
+                source_id=source_id,
+                kind=kind,
+                tier="T7" if fuzzy else "T4",
+                order_index=index,
+            )
+            for index, (source_id, _iterate) in enumerate(providers)
+        ],
+        track.platform,
+        tuning=policy.adaptive_tuning(),
+        adaptive=policy.adaptive_order,
+    )
+    return [(source.source_id, by_id[source.source_id]) for source in ranked]
+
+
+def _listen_attempt_specs(
+    client: httpx.AsyncClient,
+    providers: list[tuple[str, object]],
+    track: TrackRef,
+    range_header: str | None,
+    timeout: float,
+    *,
+    fuzzy: bool,
+) -> list[_AttemptSpec]:
+    kind = SourceKind.FUZZY_CLIP if fuzzy else SourceKind.CLIP
+    tier = "T7" if fuzzy else "T4"
+    specs: list[_AttemptSpec] = []
+    for index, (source_id, iterate) in enumerate(providers):
+        descriptor = PreviewSource(
+            source_id=source_id,
+            kind=kind,
+            tier=tier,
+            order_index=index,
+        )
+
+        async def run(
+            current_id: str = source_id,
+            current_iterate: object = iterate,
+        ) -> _AttemptResult:
+            response, clip_id = await _play_listen_clips(
+                client,
+                current_iterate,
+                track,
+                range_header,
+                timeout,
+                current_id,
+                match=is_fuzzy_preview_match if fuzzy else None,
+            )
+            return _AttemptResult(
+                response=response,
+                source_external_id=clip_id,
+                error=f"{current_id}_unavailable",
+            )
+
+        specs.append(_AttemptSpec(source=descriptor, run=run))
+    return specs
+
+
+async def _play_listen_clips(
+    client: httpx.AsyncClient,
+    iterate: object,
+    track: TrackRef,
+    range_header: str | None,
+    timeout: float,
+    source_id: str,
+    *,
+    match: object | None = None,
+) -> tuple[StreamingResponse | None, str | None]:
+    try:
+        iterate_kw = {} if match is None else {"match": match}
+        async for clip in iterate(track, **iterate_kw):  # type: ignore[operator]
+            try:
+                async with asyncio.timeout(timeout):
+                    response = await _open_audio(
+                        client,
+                        clip.url,
+                        {"Referer": clip.referer},
+                        clip.allowed_hosts,
+                        range_header=range_header,
+                        media_type=clip.media_type,
+                    )
+            except Exception as exc:
+                log.info(
+                    "listen_clip_unavailable",
+                    source_id=source_id,
+                    error_type=type(exc).__name__,
+                )
+                continue
+            if response is not None:
+                return response, clip.source_track_id
+    except Exception as exc:
+        log.info(
+            "listen_clip_search_unavailable",
+            source_id=source_id,
+            error_type=type(exc).__name__,
+        )
+    return None, None
 
 
 def _candidate_ref(candidate: DownloadCandidate) -> TrackRef:

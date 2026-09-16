@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from app.adapters.http import preview
 from app.adapters.http.routes import build_router
+from app.domain.matching import is_fuzzy_preview_match
 from app.domain.models import (
     AudioQuality,
     DownloadCandidate,
@@ -16,7 +18,9 @@ from app.domain.models import (
     TrackRef,
 )
 from app.download_sources.registry import DownloadSourceRecord, DownloadSourceRegistry
+from app.fallback.sonoma import PreviewClip
 from app.plugins._registry import PluginRecord, PluginRegistry
+from app.services import preview_telemetry
 from fastapi import FastAPI
 
 TRACK = TrackRef(
@@ -96,6 +100,7 @@ def public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     async def resolver(_host: str) -> list[str]:
         return ["93.184.216.34"]
 
+    preview_telemetry.reset_preview_telemetry()
     monkeypatch.setattr("app.adapters.http.safety._default_resolver", resolver)
 
 
@@ -105,6 +110,9 @@ async def client_for(
     sources: list[DownloadSourceRecord],
     handler: Callable[[httpx.Request], httpx.Response],
     settings: object | None = None,
+    fallback: object | None = None,
+    flmp3: object | None = None,
+    gequbao: object | None = None,
 ) -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
         app = FastAPI()
@@ -126,6 +134,12 @@ async def client_for(
         )
         if settings is not None:
             app.state.settings = settings
+        if fallback is not None:
+            app.state.fallback_service = fallback
+        if flmp3 is not None:
+            app.state.flmp3_preview = flmp3
+        if gequbao is not None:
+            app.state.gequbao_preview = gequbao
         # No database, download service or worker: listening must not enqueue a download.
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -191,6 +205,94 @@ async def test_download_sources_are_searched_one_at_a_time() -> None:
     assert third.searched == []
 
 
+async def test_a_slow_source_is_hedged_by_the_next_one() -> None:
+    order: list[str] = []
+    in_flight = 0
+    peak = 0
+    started = asyncio.Event()
+
+    class Slow(Source):
+        async def search(self, track: TrackRef) -> list[DownloadCandidate]:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            order.append(self.source_id)
+            started.set()
+            try:
+                await asyncio.sleep(1)
+                return await super().search(track)
+            finally:
+                in_flight -= 1
+
+    class Fast(Source):
+        async def search(self, track: TrackRef) -> list[DownloadCandidate]:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            order.append(self.source_id)
+            await asyncio.sleep(0)
+            in_flight -= 1
+            return await super().search(track)
+
+    settings = SimpleNamespace(
+        preview_hedge_enabled=True,
+        preview_hedge_min_delay_sec=0.05,
+        preview_hedge_max_delay_sec=0.05,
+    )
+    slow, fast, unused = Slow("slow"), Fast("fast"), Source("unused")
+    async with client_for(
+        Official(),
+        [record(slow, priority=2), record(fast, priority=1), record(unused)],
+        audio,
+        settings=settings,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert started.is_set()
+    assert order[0] == "slow"
+    assert "fast" in order
+    assert peak == 2
+    assert unused.searched == []
+    assert fast.resolved == ["song"]
+
+
+async def test_disabling_hedge_keeps_download_sources_serial() -> None:
+    order: list[str] = []
+    in_flight = 0
+    peak = 0
+
+    class Slow(Source):
+        async def search(self, track: TrackRef) -> list[DownloadCandidate]:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            order.append(self.source_id)
+            await asyncio.sleep(0.08)
+            in_flight -= 1
+            return []
+
+    class Fast(Source):
+        async def search(self, track: TrackRef) -> list[DownloadCandidate]:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            order.append(self.source_id)
+            in_flight -= 1
+            return await super().search(track)
+
+    settings = SimpleNamespace(preview_hedge_enabled=False)
+    async with client_for(
+        Official(),
+        [record(Slow("slow"), priority=2), record(Fast("fast"), priority=1)],
+        audio,
+        settings=settings,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert order == ["slow", "fast"]
+    assert peak == 1
+
+
 async def test_priority_decides_which_site_is_asked_first() -> None:
     broken, backup = Source("broken", search_fails=True), Source("backup")
     async with client_for(
@@ -200,6 +302,50 @@ async def test_priority_decides_which_site_is_asked_first() -> None:
     assert response.status_code == 200
     assert broken.searched == [TRACK]
     assert backup.resolved == ["song"]
+
+
+async def test_recent_playability_can_override_download_source_priority() -> None:
+    higher, faster = Source("higher"), Source("faster")
+    for _ in range(4):
+        preview_telemetry.RATES.record(
+            TRACK.platform, "download:higher", False, latency_ms=4_000
+        )
+        preview_telemetry.RATES.record(
+            TRACK.platform, "download:faster", True, latency_ms=200
+        )
+
+    async with client_for(
+        Official(), [record(faster), record(higher, priority=10)], audio
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+
+    assert response.status_code == 200
+    assert faster.searched == [TRACK]
+    assert higher.searched == []
+
+
+async def test_disabling_adaptive_order_restores_download_priority() -> None:
+    higher, faster = Source("higher"), Source("faster")
+    for _ in range(4):
+        preview_telemetry.RATES.record(
+            TRACK.platform, "download:higher", False, latency_ms=4_000
+        )
+        preview_telemetry.RATES.record(
+            TRACK.platform, "download:faster", True, latency_ms=200
+        )
+    settings = SimpleNamespace(preview_adaptive_order=False)
+
+    async with client_for(
+        Official(),
+        [record(faster), record(higher, priority=10)],
+        audio,
+        settings=settings,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+
+    assert response.status_code == 200
+    assert higher.searched == [TRACK]
+    assert faster.searched == []
 
 
 @pytest.mark.parametrize(
@@ -482,3 +628,276 @@ async def test_invalid_metadata_is_rejected_without_searching() -> None:
         response = await client.get(ENDPOINT, params=PARAMS | {"duration_ms": -1})
     assert response.status_code == 422
     assert not source.searched
+
+
+CLIP_HOST = "online-playback-public-service.163music-playerapi.sbs"
+CLIP_URL = f"https://{CLIP_HOST}/a/resource/song.ogg"
+CLIP_BODY = b"OggS" + bytes(12) + b"sonoma-preview"
+
+
+class ClipFallback:
+    def __init__(self) -> None:
+        self.asked: list[TrackRef] = []
+
+    async def iter_preview_clips(self, track: TrackRef, **_kwargs):
+        self.asked.append(track)
+        yield PreviewClip(
+            url=CLIP_URL,
+            page_url="https://mirror.example/song/x.html",
+            media_type="audio/ogg",
+            allowed_hosts=("163music-playerapi.sbs",),
+            referer="https://www.xmwsyy.com/",
+            source_track_id="/song/x.html",
+        )
+
+
+def clip_audio(request: httpx.Request) -> httpx.Response:
+    if request.url.host == CLIP_HOST:
+        assert request.headers.get("referer") == "https://www.xmwsyy.com/"
+        return httpx.Response(
+            200, content=CLIP_BODY, headers={"Content-Type": "audio/ogg"}
+        )
+    return httpx.Response(404, content=b"missing")
+
+
+async def test_sonoma_clip_plays_after_official_and_download_sources_miss() -> None:
+    fallback = ClipFallback()
+    async with client_for(Official(), [], clip_audio, fallback=fallback) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == CLIP_BODY
+    assert fallback.asked == [TRACK]
+
+
+async def test_download_sources_still_beat_the_sonoma_clip() -> None:
+    fallback = ClipFallback()
+    source = Source("backup")
+    async with client_for(Official(), [record(source)], audio, fallback=fallback) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == b"fLaC-audio"
+    assert source.resolved == ["song"]
+    assert fallback.asked == []
+
+
+async def test_download_only_does_not_use_the_sonoma_clip() -> None:
+    fallback = ClipFallback()
+    async with client_for(Official(), [], clip_audio, fallback=fallback) as client:
+        response = await client.get(ENDPOINT, params=PARAMS | {"download_only": "true"})
+    assert response.status_code == 404
+    assert fallback.asked == []
+
+
+FLMP3_HOST = "car-lv.kuwo.cn"
+FLMP3_URL = f"https://{FLMP3_HOST}/resource/song.mp3"
+FLMP3_BODY = b"ID3" + bytes(13) + b"flmp3-preview"
+
+
+class Flmp3Clips:
+    def __init__(self) -> None:
+        self.asked: list[TrackRef] = []
+
+    async def iter_preview_clips(self, track: TrackRef, **_kwargs):
+        self.asked.append(track)
+        yield PreviewClip(
+            url=FLMP3_URL,
+            page_url="https://music.example/song/46.html",
+            media_type="audio/mpeg",
+            allowed_hosts=("kuwo.cn",),
+            referer="https://music.example/song/46.html",
+            source_track_id="/song/46.html",
+        )
+
+
+def flmp3_audio(request: httpx.Request) -> httpx.Response:
+    if request.url.host == FLMP3_HOST:
+        return httpx.Response(
+            200, content=FLMP3_BODY, headers={"Content-Type": "audio/mpeg"}
+        )
+    if request.url.host == CLIP_HOST:
+        return clip_audio(request)
+    return httpx.Response(404, content=b"missing")
+
+
+async def test_flmp3_clip_plays_after_sonoma_misses() -> None:
+    class EmptyFallback:
+        def __init__(self) -> None:
+            self.asked: list[TrackRef] = []
+
+        async def iter_preview_clips(self, track: TrackRef, **_kwargs):
+            self.asked.append(track)
+            if False:
+                yield None
+
+    empty = EmptyFallback()
+    flmp3 = Flmp3Clips()
+    async with client_for(
+        Official(), [], flmp3_audio, fallback=empty, flmp3=flmp3
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == FLMP3_BODY
+    assert empty.asked == [TRACK]
+    assert flmp3.asked == [TRACK]
+
+
+async def test_sonoma_clip_still_beats_flmp3() -> None:
+    fallback = ClipFallback()
+    flmp3 = Flmp3Clips()
+    async with client_for(
+        Official(), [], flmp3_audio, fallback=fallback, flmp3=flmp3
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == CLIP_BODY
+    assert fallback.asked == [TRACK]
+    assert flmp3.asked == []
+
+
+async def test_recent_clip_stats_can_move_flmp3_before_sonoma() -> None:
+    fallback = ClipFallback()
+    flmp3 = Flmp3Clips()
+    for _ in range(4):
+        preview_telemetry.RATES.record(
+            TRACK.platform, "clip:sonoma", False, latency_ms=4_000
+        )
+        preview_telemetry.RATES.record(
+            TRACK.platform, "clip:flmp3", True, latency_ms=200
+        )
+
+    async with client_for(
+        Official(), [], flmp3_audio, fallback=fallback, flmp3=flmp3
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+
+    assert response.status_code == 200
+    assert response.content == FLMP3_BODY
+    assert flmp3.asked == [TRACK]
+    assert fallback.asked == []
+
+
+GEQUBAO_HOST = "kw-er.kuwo.cn"
+GEQUBAO_URL = f"https://{GEQUBAO_HOST}/resource/gequbao.mp3"
+GEQUBAO_BODY = b"ID3" + bytes(13) + b"gequbao-preview"
+
+
+class GequbaoClips:
+    def __init__(self) -> None:
+        self.asked: list[TrackRef] = []
+
+    async def iter_preview_clips(self, track: TrackRef, **_kwargs):
+        self.asked.append(track)
+        yield PreviewClip(
+            url=GEQUBAO_URL,
+            page_url="https://music.example/music/4190",
+            media_type="audio/mpeg",
+            allowed_hosts=("kuwo.cn",),
+            referer="https://music.example/music/4190",
+            source_track_id="/music/4190",
+        )
+
+
+def listen_audio(request: httpx.Request) -> httpx.Response:
+    if request.url.host == GEQUBAO_HOST:
+        return httpx.Response(
+            200, content=GEQUBAO_BODY, headers={"Content-Type": "audio/mpeg"}
+        )
+    return flmp3_audio(request)
+
+
+class EmptyClips:
+    def __init__(self) -> None:
+        self.asked: list[TrackRef] = []
+
+    async def iter_preview_clips(self, track: TrackRef, **_kwargs):
+        self.asked.append(track)
+        if False:
+            yield None
+
+
+async def test_gequbao_clip_plays_after_flmp3_misses() -> None:
+    empty = EmptyClips()
+    gequbao = GequbaoClips()
+    async with client_for(
+        Official(),
+        [],
+        listen_audio,
+        fallback=empty,
+        flmp3=empty,
+        gequbao=gequbao,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == GEQUBAO_BODY
+    assert gequbao.asked == [TRACK]
+
+
+async def test_flmp3_clip_still_beats_gequbao() -> None:
+    flmp3 = Flmp3Clips()
+    gequbao = GequbaoClips()
+    async with client_for(
+        Official(), [], listen_audio, flmp3=flmp3, gequbao=gequbao
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == FLMP3_BODY
+    assert flmp3.asked == [TRACK]
+    assert gequbao.asked == []
+
+
+async def test_all_strict_listen_providers_are_reported_as_t4(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gequbao = GequbaoClips()
+    events: list[preview_telemetry.PreviewEvent] = []
+
+    async def record_event(event: preview_telemetry.PreviewEvent, **_: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(preview, "publish", record_event)
+    async with client_for(Official(), [], listen_audio, gequbao=gequbao) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+
+    assert response.status_code == 200
+    assert [(event.tier, event.source_platform) for event in events] == [
+        ("T4", "gequbao")
+    ]
+
+
+class FuzzyOnlyClips:
+    def __init__(self) -> None:
+        self.asked: list[TrackRef] = []
+        self.matches: list[object] = []
+
+    async def iter_preview_clips(self, track: TrackRef, *, match=None, **_kwargs):
+        self.asked.append(track)
+        self.matches.append(match)
+        if match is None:
+            return
+            yield
+        yield PreviewClip(
+            url=GEQUBAO_URL,
+            page_url="https://music.example/music/4190",
+            media_type="audio/mpeg",
+            allowed_hosts=("kuwo.cn",),
+            referer="https://music.example/music/4190",
+            source_track_id="/music/4190",
+        )
+
+
+async def test_fuzzy_clip_plays_after_the_strict_listen_ladder_misses() -> None:
+    empty = EmptyClips()
+    fuzzy = FuzzyOnlyClips()
+    async with client_for(
+        Official(),
+        [],
+        listen_audio,
+        fallback=empty,
+        flmp3=empty,
+        gequbao=fuzzy,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == GEQUBAO_BODY
+    assert fuzzy.matches == [None, is_fuzzy_preview_match]
+

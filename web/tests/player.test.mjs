@@ -372,6 +372,54 @@ test("unavailable fallback marks a single song failed only once", async () => {
   assert.equal(store.failStreak, 1);
 });
 
+test("a late audio playing event still counts as a successful preview", async () => {
+  FakeAudio.results.push(new Promise(() => {}));
+  store.play(netease);
+  await settle();
+  assert.equal(store.playing, false);
+  assert.equal(store.loadState, "loading");
+  store.audio.emit("playing");
+  assert.equal(store.playing, true);
+  assert.equal(store.loadState, "ready");
+  assert.equal(store.failed, false);
+  assert.equal(store.loading, false);
+});
+
+test("a network stall retries the preview stream instead of failing immediately", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  store.play(netease);
+  await settle();
+  store.audio.error = { code: 2 };
+  store.audio.emit("error");
+  assert.equal(store.failed, false);
+  assert.equal(store.loading, true);
+  store.audio.error = null;
+  context.mock.timers.tick(400);
+  await settle();
+  assert.equal(store.playing, true);
+  assert.equal(store.failed, false);
+  assert.equal(store.streamRetries, 1);
+});
+
+test("preview retries exhaust then mark the song failed", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  store.play(netease);
+  await settle();
+  store.audio.error = { code: 4 };
+  store.audio.emit("error");
+  context.mock.timers.tick(400);
+  await settle();
+  store.audio.error = { code: 4 };
+  store.audio.emit("error");
+  context.mock.timers.tick(400);
+  await settle();
+  store.audio.error = { code: 4 };
+  store.audio.emit("error");
+  assert.equal(store.failed, true);
+  assert.equal(store.playing, false);
+  assert.equal(store.loadState, "failed");
+});
+
 test("a song without any playable source stays selected instead of skipping ahead", async () => {
   const next = { ...netease, external_id: "next" };
   store.play(netease, [netease, next]);
