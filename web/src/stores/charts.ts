@@ -13,6 +13,10 @@ import type { BoardInfo, CatalogPlatform, LatestBoard, PlatformInfo } from "../t
 
 /** 目录榜（非 yaml 配置）没有服务端快照，沿用后端 live_spec 的 1 小时刷新周期。 */
 const CATALOG_REFRESH_MS = 60 * 60 * 1000;
+// 后端在榜单还没有快照时返回的 code（HTTP 状态仍是 404）。冷启动期间每个榜都会
+// 走到这里，那是正常状态而不是错误：卡片显示「尚无快照」，不能进 latestErrors，
+// 否则首屏会整屏飘红并弹出后端英文原文。
+const MISSING_SNAPSHOT_CODE = 40402;
 const latestRequests = new WeakMap<object, Map<string, Promise<void>>>();
 
 type LatestStoreTarget = {
@@ -24,6 +28,10 @@ type LatestStoreTarget = {
 
 function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
+}
+
+function isMissingSnapshot(code: number, data: LatestBoard | null): data is LatestBoard {
+  return code === MISSING_SNAPSHOT_CODE && Boolean(data) && Array.isArray(data?.items);
 }
 
 function requestMap(store: object): Map<string, Promise<void>> {
@@ -38,7 +46,7 @@ function requestMap(store: object): Map<string, Promise<void>> {
 function loadLatest(
   store: LatestStoreTarget,
   boardId: string,
-  request: () => Promise<{ code: number; data: LatestBoard; msg: string }>,
+  request: () => Promise<{ code: number; data: LatestBoard | null; msg: string }>,
 ): Promise<void> {
   const requests = requestMap(store);
   const inflight = requests.get(boardId);
@@ -50,6 +58,9 @@ function loadLatest(
     try {
       const response = await Promise.resolve().then(request);
       if (response.code === 0 && response.data && Array.isArray(response.data.items)) {
+        store.latest[boardId] = { ...response.data, board_id: boardId };
+        delete store.latestErrors[boardId];
+      } else if (isMissingSnapshot(response.code, response.data)) {
         store.latest[boardId] = { ...response.data, board_id: boardId };
         delete store.latestErrors[boardId];
       } else {

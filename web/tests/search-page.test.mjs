@@ -8,7 +8,7 @@ const server = await createServer({
   configFile: false,
   envFile: false,
   appType: "custom",
-  server: { middlewareMode: true, hmr: false, watch: null },
+  server: { middlewareMode: true, hmr: { port: 27_700 + (process.pid % 1_000) }, watch: null },
   optimizeDeps: { noDiscovery: true, include: [] },
 });
 

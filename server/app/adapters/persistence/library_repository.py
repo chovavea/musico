@@ -4,9 +4,9 @@ import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import CursorResult, Result, and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,18 @@ from app.domain.models import AudioQuality, DownloadCandidate, TrackRef
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _updated_rows(result: Result[Any]) -> int:
+    """Rows a DML statement matched.
+
+    ``AsyncSession.execute`` is typed as returning the generic ``Result``, but an
+    ``update()`` still comes back as a ``CursorResult``. The lease guards below
+    rely on ``rowcount`` reflecting the rows the ``WHERE`` clause matched, so the
+    cast keeps that guarantee checked instead of silently reading an attribute
+    mypy cannot see.
+    """
+    return cast(CursorResult[Any], result).rowcount
 
 
 def _track_from_row(row: LibraryTrackRow) -> TrackRef:
@@ -318,7 +330,7 @@ class LibraryRepository:
                     heartbeat_at=_now(),
                 )
             )
-            if result.rowcount != 1:
+            if _updated_rows(result) != 1:
                 return False
         task.bytes_done = bytes_done
         task.bytes_total = bytes_total
@@ -343,7 +355,7 @@ class LibraryRepository:
                     lease_token=None,
                 )
             )
-            if result.rowcount != 1:
+            if _updated_rows(result) != 1:
                 return False
         task.status = "failed"
         task.last_error = error[:1000]
@@ -392,7 +404,7 @@ class LibraryRepository:
                     lease_token=None,
                 )
             )
-            if result.rowcount != 1:
+            if _updated_rows(result) != 1:
                 return False
         task.status = "retrying"
         task.next_retry_at = next_retry_at
@@ -437,7 +449,7 @@ class LibraryRepository:
                 )
                 .values(**values)
             )
-            if result.rowcount != 1:
+            if _updated_rows(result) != 1:
                 return False
         else:
             task.status = "queued"
@@ -490,7 +502,7 @@ class LibraryRepository:
                     lease_token=None,
                 )
             )
-            if result.rowcount != 1:
+            if _updated_rows(result) != 1:
                 raise LeaseLostError
         result = await self._session.execute(
             select(LibraryAssetRow)
@@ -580,7 +592,7 @@ class LibraryRepository:
             .order_by(DownloadTaskRow.created_at.desc())
             .limit(limit)
         )
-        return [self.task_payload(task, track) for task, track in result.all()]
+        return [self._task_fields(task, track) for task, track in result.all()]
 
     async def record_fallback_event(
         self,
@@ -690,6 +702,11 @@ class LibraryRepository:
     ) -> dict[str, Any] | None:
         if task is None:
             return None
+        return LibraryRepository._task_fields(task, track)
+
+    @staticmethod
+    def _task_fields(task: DownloadTaskRow, track: LibraryTrackRow | None) -> dict[str, Any]:
+        """Payload for a task row that is known to exist (joins guarantee one)."""
         return {
             "id": task.id,
             "track_id": task.library_track_id,

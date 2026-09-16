@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, MutableMapping
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 import structlog
@@ -14,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
 
 from app.adapters.download_worker import DownloadWorker
 from app.adapters.http.middleware import (
@@ -42,7 +44,7 @@ log = structlog.get_logger(__name__)
 class SPAStaticFiles(StaticFiles):
     """Serve the Vue entrypoint for client-side routes while preserving asset 404s."""
 
-    async def get_response(self, path: str, scope: dict) -> object:
+    async def get_response(self, path: str, scope: MutableMapping[str, Any]) -> Response:
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:

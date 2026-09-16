@@ -11,16 +11,18 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-应用设置全部写在 `.env`（compose 用 `env_file` 整份注入容器），新增开关不需要改 `docker-compose.yml`；只有描述容器本身的值（`DATABASE_URL`、`BOARDS_YAML`、`MUSIC_LIBRARY_DIR`、`DOWNLOAD_SOURCE_*`、`TZ`）由 compose 覆盖。改 `.env` 后需要 `docker compose up -d` 重建容器（不是 `restart`）。
+应用设置全部写在 `.env`（compose 用 `env_file` 整份注入容器），新增开关不需要改 `compose.yaml`；只有描述容器本身的值（`DATABASE_URL`、`BOARDS_YAML`、`MUSIC_LIBRARY_DIR`、`DOWNLOAD_SOURCE_*`、`TZ`）由 compose 覆盖。改 `.env` 后需要 `docker compose up -d` 重建容器（不是 `restart`）。
 
-应用镜像目标 < 200MB（Alpine 多阶段）。若 `docker compose` 拉官方镜像超时，可先从镜像站拉取再打官方 tag，例如：
+应用同时支持 Docker 的 `<ALIAS>_FILE` 约定（`server/app/settings.py` 的 `apply_file_env`）：`DATABASE_PASSWORD_FILE`、`API_TOKEN_FILE` 这类变量指向一个挂载进来的文件即可，值不进容器环境（也不会出现在 `docker inspect`）；文件不可读或为空会直接启动失败，而不是静默回退默认值。数据库连接可以给整条 `DATABASE_URL`，也可以只给 `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_USER` / `DATABASE_NAME` 加 `DATABASE_PASSWORD_FILE`，口令文件优先就靠后者；显式 `DATABASE_URL` 或 `DATABASE_HOST` 永远优先，`POSTGRES_*` 只在两者都缺失时拼一个本机地址。
+
+仓库这份 `compose.yaml` 起的是**测试栈**：镜像标签 `music:evolve`，宿主端口 `8090`，测试库数据在项目内 `./data/postgres`、从宿主访问用 `127.0.0.1:5433`（正式栈占用 8080 / 5432，镜像 `musico:latest` 由部署目录单独构建，两者互不覆盖）。应用镜像目标 < 200MB（Alpine 多阶段）。若 `docker compose` 拉官方镜像超时，可先从镜像站拉取再打官方 tag，例如：
 
 ```bash
 docker pull docker.m.daocloud.io/library/python:3.12-alpine
 docker tag docker.m.daocloud.io/library/python:3.12-alpine python:3.12-alpine
 ```
 
-约 30 秒内完成建表；首次拉榜后 `GET /api/v1/health` 的 `data.status` 为 `ready`（各 enabled 榜至少一条成功快照）。打开 http://127.0.0.1:8080 。
+约 30 秒内完成建表；首次拉榜后 `GET /api/v1/health` 的 `data.status` 为 `ready`（各 enabled 榜至少一条成功快照）。打开 http://127.0.0.1:8090 。
 
 ## 搜索
 
@@ -59,12 +61,14 @@ GET /api/v1/search?q=周杰伦&type=full&limit=100
 cd server
 pip install -e ".[dev]"
 # 需要可用的 PostgreSQL，或先 docker compose up -d postgres
-uvicorn app.main:create_app --factory --reload --reload-dir . --reload-dir ../configs --port 8080
+uvicorn app.main:create_app --factory --reload --reload-dir . --reload-dir ../configs --port 8090
 
 cd ../web
 npm install
 npm run dev
 ```
+
+改动 `web/src` 后要么走 `npm run dev`（Vite 开发服务器，`/api` 默认代理到 `127.0.0.1:8090`），要么先在 `web/` 里跑一次 `npm run build`：直接打开后端端口时端的是 `web/dist` 里的构建产物，不重新构建就会看到旧界面。
 
 ## 下载源插件
 
@@ -124,12 +128,13 @@ npm run dev
 - **下载与试听不自动跟随重定向**：下载 worker、官方试听及下载站点试听代理在每次跳转后重新校验主机白名单（来自 `plugin.toml` / 内置后缀表），并拒绝解析到私有、环回或链路本地地址的目标，防止 302 到内网或云元数据地址（SSRF）。跨站跳转时不转发敏感请求头。
 - **可选 API Token**：设置 `API_TOKEN` 后，所有 `POST` / `DELETE` / 其他写操作的 `/api/v1/*` 请求必须携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，否则返回 401。示例：
   ```bash
-  curl -X POST http://127.0.0.1:8080/api/v1/downloads \
+  curl -X POST http://127.0.0.1:8090/api/v1/downloads \
     -H "Authorization: Bearer $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"platform":"qqmusic","external_id":"xxx","title":"晴天","artist":"周杰伦"}'
   ```
-  读接口（榜单、健康检查、曲库列表/试听）默认不鉴权；浏览器访问整套 UI 时建议在前面加一层反向代理认证，并仅在内网或本机暴露（默认 `docker compose` 将 `8080` 绑到所有网卡，可改为 `127.0.0.1:8080:8080`）。
+  **浏览器 UI**：在「配置」菜单里填入同一个 `API_TOKEN`（只存在浏览器本地，写请求会带上 `X-API-Token`）；不填时下载、排序、删除这些写操作会返回 401，页面会提示去「配置」里补令牌。
+  读接口（榜单、健康检查、曲库列表/试听）默认不鉴权；浏览器访问整套 UI 时建议在前面加一层反向代理认证，并仅在内网或本机暴露（默认 `docker compose` 将 `8090` 绑到所有网卡，可改为 `127.0.0.1:8090:8080`）。
 - **下载 worker 是单实例设计**：`.part` 续传文件与任务租约强相关，当前数据库租约只保护写库、不保护同一任务跨进程写同一磁盘文件；请勿对 musico 服务水平扩容多个副本，也不要为同一 `MUSIC_LIBRARY_DIR` 挂载启动第二个 worker。
 - 榜单抓取与下载使用独立的 HTTP 客户端与连接池，长连接大文件不会拖慢抓榜/健康检查；预览与下载各有独立的读超时。
 

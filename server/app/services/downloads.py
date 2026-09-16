@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -13,6 +13,9 @@ from app.domain.models import (
     is_allowed_download_format,
 )
 from app.settings import Settings
+
+if TYPE_CHECKING:
+    from app.adapters.persistence.models import DownloadTaskRow
 
 
 class DownloadService:
@@ -138,7 +141,7 @@ class DownloadService:
         return path
 
 
-def repo_task_type() -> type:
+def repo_task_type() -> type[DownloadTaskRow]:
     from app.adapters.persistence.models import DownloadTaskRow
 
     return DownloadTaskRow

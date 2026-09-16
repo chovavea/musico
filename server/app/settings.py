@@ -1,8 +1,9 @@
 import os
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -15,10 +16,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = Field(
-        default="postgresql+psycopg://musico@127.0.0.1:5432/musico",
-        alias="DATABASE_URL",
-    )
+    database_url: str = Field(default="", alias="DATABASE_URL")
+    # Used to assemble ``DATABASE_URL`` when it is not given directly, so the
+    # password can arrive as a file (``DATABASE_PASSWORD_FILE``) instead of an
+    # environment variable — the convention the official images use too.
+    database_host: str = Field(default="127.0.0.1", alias="DATABASE_HOST")
+    database_port: int = Field(default=5432, alias="DATABASE_PORT")
+    database_user: str = Field(default="musico", alias="DATABASE_USER")
+    database_name: str = Field(default="musico", alias="DATABASE_NAME")
+    database_password: str = Field(default="", alias="DATABASE_PASSWORD")
     db_pool_size: int = Field(default=10, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=20, alias="DB_MAX_OVERFLOW")
     enable_media_resolver: bool = Field(default=False, alias="ENABLE_MEDIA_RESOLVER")
@@ -62,6 +68,19 @@ class Settings(BaseSettings):
     fallback_positive_ttl_sec: int = Field(default=604800, alias="FALLBACK_POSITIVE_TTL_SEC")
     fallback_negative_ttl_sec: int = Field(default=300, alias="FALLBACK_NEGATIVE_TTL_SEC")
     fallback_event_limit: int = Field(default=20, alias="FALLBACK_EVENT_LIMIT")
+
+    @model_validator(mode="after")
+    def _fill_database_url(self) -> "Settings":
+        if self.database_url:
+            return self
+        credentials = self.database_user
+        if self.database_password:
+            credentials += f":{quote(self.database_password, safe='')}"
+        self.database_url = (
+            f"postgresql+psycopg://{credentials}"
+            f"@{self.database_host}:{self.database_port}/{self.database_name}"
+        )
+        return self
 
     @property
     def download_roots(self) -> list[Path]:
@@ -108,8 +127,16 @@ def export_env_file(path: Path | None = None) -> None:
 
 
 def _ensure_local_database_url() -> None:
-    """Compose DATABASE_URL from POSTGRES_* when .env omits it (Docker injects it)."""
-    if os.environ.get("DATABASE_URL"):
+    """Compose DATABASE_URL from POSTGRES_* when nothing else names a database.
+
+    The repository's own stack hands the app ``POSTGRES_*``, while a deployment
+    that keeps the password in a secret file hands over ``DATABASE_HOST`` /
+    ``DATABASE_USER`` / ``DATABASE_NAME`` instead.  The two must not fight: an
+    explicit ``DATABASE_URL`` or ``DATABASE_HOST`` always wins, so injecting
+    ``POSTGRES_*`` into a container can never silently point the app (and alembic,
+    which prefers ``os.environ["DATABASE_URL"]``) at 127.0.0.1.
+    """
+    if os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_HOST"):
         return
     user = os.environ.get("POSTGRES_USER")
     password = os.environ.get("POSTGRES_PASSWORD", "")
@@ -124,6 +151,33 @@ def _ensure_local_database_url() -> None:
     os.environ["DATABASE_URL"] = f"postgresql+psycopg://{auth}@127.0.0.1:5432/{quote(db, safe='')}"
 
 
+def _setting_aliases() -> set[str]:
+    return {field.alias for field in Settings.model_fields.values() if field.alias}
+
+
+def apply_file_env() -> None:
+    """Resolve ``<ALIAS>_FILE`` into ``<ALIAS>`` for known settings.
+
+    Docker's official images accept ``FOO_FILE`` as a pointer to a file holding
+    the value of ``FOO``.  The same convention here keeps secrets out of the
+    container environment (and out of ``docker inspect``): an explicit value
+    always wins, and an unreadable or empty file is a hard error rather than a
+    silent fallback to a default.
+    """
+    for alias in _setting_aliases():
+        path = os.environ.get(f"{alias}_FILE")
+        if not path or alias in os.environ:
+            continue
+        try:
+            value = Path(path).read_text(encoding="utf-8").rstrip("\r\n")
+        except OSError as exc:
+            raise RuntimeError(f"{alias}_FILE is not readable: {path}") from exc
+        if not value:
+            raise RuntimeError(f"{alias}_FILE is empty: {path}")
+        os.environ[alias] = value
+
+
 @lru_cache
 def get_settings() -> Settings:
+    apply_file_env()
     return Settings()

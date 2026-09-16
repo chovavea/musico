@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
+import { getApiToken, setApiToken } from "../api";
 import { useHealthStore } from "../stores/health";
 import { useThemeStore, type StyleThemeId } from "../stores/theme";
 import { useDownloadsStore } from "../stores/downloads";
@@ -13,6 +14,9 @@ const route = useRoute();
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
 const trigger = ref<HTMLButtonElement | null>(null);
+const apiToken = ref("");
+const tokenSaved = ref(false);
+let tokenSavedTimer = 0;
 
 const statusLabel = computed(() => {
   if (health.error) return "异常";
@@ -57,10 +61,25 @@ function chooseStyle(id: StyleThemeId) {
   theme.setStyleTheme(id);
 }
 
+function loadApiToken() {
+  apiToken.value = getApiToken();
+}
+
+function saveApiToken() {
+  setApiToken(apiToken.value);
+  apiToken.value = getApiToken();
+  tokenSaved.value = true;
+  window.clearTimeout(tokenSavedTimer);
+  tokenSavedTimer = window.setTimeout(() => {
+    tokenSaved.value = false;
+  }, 2000);
+}
+
 function toggle() {
   open.value = !open.value;
   if (open.value) {
     // 空闲时轮询已停止；打开菜单时刷新一次任务/曲库计数。
+    loadApiToken();
     void downloads.refreshSummary();
     if (!downloads.libraryLoaded) void downloads.loadLibrary();
   }
@@ -69,6 +88,7 @@ function toggle() {
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onDocKey);
+  loadApiToken();
   void downloads.refreshSummary();
   if (!downloads.libraryLoaded) void downloads.loadLibrary();
   downloads.startPolling();
@@ -76,6 +96,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onDocKey);
+  window.clearTimeout(tokenSavedTimer);
   downloads.stopPolling();
 });
 </script>
@@ -123,6 +144,13 @@ onUnmounted(() => {
         <div class="min-w-0 flex-1">
           <div class="font-medium">下载失败</div>
           <div class="mt-1 truncate text-xs">{{ downloads.failureNotice.title || "未知歌曲" }}</div>
+          <div
+            v-if="downloads.fallbackPending[downloads.failureNotice.id]"
+            class="mt-1 text-xs"
+            aria-live="polite"
+          >
+            正在查找网盘链接…
+          </div>
           <a
             v-if="downloads.failureNotice.source_page_url"
             :href="downloads.failureNotice.source_page_url"
@@ -213,6 +241,24 @@ onUnmounted(() => {
             {{ item.name }}
           </button>
         </div>
+      </div>
+      <div class="flex h-11 items-center gap-2 px-2">
+        <label class="shrink-0 text-sm" for="api-token">接口令牌</label>
+        <input
+          id="api-token"
+          v-model="apiToken"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="同 API_TOKEN"
+          class="h-8 w-full min-w-0 rounded-full bg-zinc-100 px-3 text-xs outline-none ring-1 ring-transparent transition placeholder:text-zinc-400 focus:bg-white focus:ring-zinc-300 dark:bg-zinc-800 dark:focus:bg-zinc-800 dark:focus:ring-white/20"
+          @change="saveApiToken"
+          @blur="saveApiToken"
+          @keydown.enter.prevent="saveApiToken"
+        />
+        <span v-if="tokenSaved" class="shrink-0 text-xs text-emerald-600 dark:text-emerald-300">
+          已保存
+        </span>
       </div>
       <div class="mx-2 h-px bg-zinc-100 dark:bg-white/10" role="separator" />
       <RouterLink

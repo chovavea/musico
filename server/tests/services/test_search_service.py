@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 import structlog
+from app.adapters.persistence.models import LibraryAssetRow, LibraryTrackRow
 from app.domain.matching import is_same_recording
 from app.domain.models import TrackRef
 from app.plugins._registry import PluginRecord, PluginRegistry
@@ -691,6 +692,24 @@ async def test_search_does_not_cache_a_result_that_timed_out(
 
 
 @pytest.mark.asyncio
+async def test_search_does_not_cache_a_result_where_a_platform_failed() -> None:
+    """A refused or rate-limited platform must come back on the very next try."""
+    qq = FakeSearch([track("qqmusic", "qq-1")])
+    netease = FakeSearch(error=ValueError("netease search rejected the request: code=2001"))
+    service = service_with(
+        PluginRecord("qqmusic", "QQ音乐", ["search"], {}, search=qq),  # type: ignore[arg-type]
+        PluginRecord("netease", "网易云音乐", ["search"], {}, search=netease),  # type: ignore[arg-type]
+    )
+
+    first = await service.search("我不难过", kind="full", limit=10)
+    second = await service.search("我不难过", kind="full", limit=10)
+
+    assert qq.calls == ["我不难过", "我不难过"]
+    assert first["partial"] is True
+    assert second["partial"] is True
+
+
+@pytest.mark.asyncio
 async def test_search_keeps_a_platform_that_finished_after_the_budget_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -745,6 +764,59 @@ class _FakeSession:
 
     async def execute(self, _stmt: object) -> _FakeResult:
         return _FakeResult(self._batches.pop(0) if self._batches else [])
+
+
+class _EntitySession:
+    """Fake session that answers by entity, so query order does not matter."""
+
+    def __init__(self, row: Any, asset: Any, reads: dict[str, int]) -> None:
+        self._row = row
+        self._asset = asset
+        self._reads = reads
+
+    async def __aenter__(self) -> _EntitySession:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def execute(self, stmt: Any) -> _FakeResult:
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is LibraryTrackRow:
+            self._reads["tracks"] += 1
+            return _FakeResult([self._row])
+        if entity is LibraryAssetRow:
+            return _FakeResult([self._asset])
+        return _FakeResult([])
+
+
+@pytest.mark.asyncio
+async def test_library_row_index_is_reused_until_its_ttl_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Search annotations must not re-read the whole library on every keystroke."""
+    row = FakeLibraryTrack(id="lib-1", title="我不难过", artist="孙燕姿", duration_ms=320_000)
+    asset = FakeLibraryAsset(id="asset-1", library_track_id="lib-1")
+    reads = {"tracks": 0}
+    qq = FakeSearch([track("qqmusic", "qq-1")])
+    record = PluginRecord("qqmusic", "QQ音乐", ["search"], {}, search=qq)  # type: ignore[arg-type]
+    service = SearchService(
+        PluginRegistry(plugins={"qqmusic": record}),
+        lambda: _EntitySession(row, asset, reads),  # type: ignore[arg-type]
+    )
+
+    first = await service.search("我不难过")
+    second = await service.search("我不难过")
+
+    assert first["items"][0]["library_asset_id"] == "asset-1"
+    assert second["items"][0]["library_asset_id"] == "asset-1"
+    assert reads["tracks"] == 1
+
+    monkeypatch.setattr(search_module, "_LIBRARY_INDEX_TTL_SEC", 0.0)
+    third = await service.search("我不难过")
+
+    assert third["items"][0]["library_asset_id"] == "asset-1"
+    assert reads["tracks"] == 2
 
 
 @pytest.mark.asyncio

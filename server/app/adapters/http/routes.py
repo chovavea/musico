@@ -190,7 +190,9 @@ def build_router() -> APIRouter:
         if platform not in names:
             return fail(40401, "platform not found", status_code=404)
         raw = await _raw_catalog_platforms(request)
-        groups = next((item["groups"] for item in raw if item["id"] == platform), [])
+        groups: list[dict[str, Any]] = next(
+            (item["groups"] for item in raw if item["id"] == platform), []
+        )
         if not groups:
             return fail(40401, "catalog unavailable", status_code=404)
         async with request.app.state.session_factory() as session:
@@ -220,7 +222,9 @@ def build_router() -> APIRouter:
         if platform not in names:
             return fail(40401, "platform not found", status_code=404)
         raw = await _raw_catalog_platforms(request)
-        groups = next((item["groups"] for item in raw if item["id"] == platform), [])
+        groups: list[dict[str, Any]] = next(
+            (item["groups"] for item in raw if item["id"] == platform), []
+        )
         if not groups:
             return fail(40401, "catalog unavailable", status_code=404)
         async with request.app.state.session_factory() as session:
@@ -389,7 +393,9 @@ async def _raw_catalog_platforms(request: Request) -> list[dict[str, Any]]:
     cached = cache.get("catalog:raw")
     now_ts = datetime.now().timestamp()
     if cached and now_ts - cached["ts"] < 600:
-        return cached["data"]
+        data = cached["data"]
+        if isinstance(data, list):
+            return data
     registry = request.app.state.registry
     platforms: list[dict[str, Any]] = []
     for platform_id, name in registry.platform_names().items():

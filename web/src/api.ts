@@ -45,7 +45,46 @@ export function isAbortError(reason: unknown): boolean {
 }
 
 const REQUEST_TIMEOUT_MS = 15_000;
+// 下载兜底要在服务端串行读好几个页面（每个请求上限 FALLBACK_TIMEOUT_SEC），
+// 所以它拿到的超时必须比默认值宽松，否则浏览器先放弃、用户点了没有任何反应。
+const FALLBACK_RESOLVE_TIMEOUT_MS = 120_000;
+// 设置了 API_TOKEN 的部署要求写操作带令牌。令牌只存在本机浏览器里，由「配置」
+// 菜单填写，读接口不带（后端也只校验写操作）。
+const API_TOKEN_STORAGE_KEY = "musico-api-token";
+const AUTH_ERROR_CODE = 40101;
+const AUTH_ERROR_MESSAGE = "写操作需要 API Token：请在「配置」里填入与 API_TOKEN 相同的值";
 let activeFullSearch: AbortController | null = null;
+
+export function getApiToken(): string {
+  try {
+    return globalThis.localStorage?.getItem(API_TOKEN_STORAGE_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setApiToken(value: string): void {
+  try {
+    const trimmed = value.trim();
+    if (trimmed) {
+      globalThis.localStorage?.setItem(API_TOKEN_STORAGE_KEY, trimmed);
+    } else {
+      globalThis.localStorage?.removeItem(API_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // 无痕模式或禁用存储时，令牌只在本页会话里生效。
+  }
+}
+
+function requestHeaders(init?: RequestInit): Headers {
+  const headers = new Headers(init?.headers);
+  const method = (init?.method ?? "GET").toUpperCase();
+  const token = getApiToken();
+  if (token && method !== "GET" && method !== "HEAD") {
+    headers.set("X-API-Token", token);
+  }
+  return headers;
+}
 
 type LinkedSignal = {
   signal: AbortSignal;
@@ -81,16 +120,24 @@ function linkSignals(external?: AbortSignal, timeoutMs = 0): LinkedSignal {
   };
 }
 
-async function getJson<T>(url: string, init?: RequestInit): Promise<Envelope<T>> {
-  return sendJson<T>(url, init);
+async function getJson<T>(
+  url: string,
+  init?: RequestInit,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Envelope<T>> {
+  return sendJson<T>(url, init, timeoutMs);
 }
 
-async function sendJson<T>(url: string, init?: RequestInit): Promise<Envelope<T>> {
-  const linked = linkSignals(init?.signal ?? undefined, REQUEST_TIMEOUT_MS);
+async function sendJson<T>(
+  url: string,
+  init?: RequestInit,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<Envelope<T>> {
+  const linked = linkSignals(init?.signal ?? undefined, timeoutMs);
   let response: Response;
   let text: string;
   try {
-    response = await fetch(url, { ...init, signal: linked.signal });
+    response = await fetch(url, { ...init, headers: requestHeaders(init), signal: linked.signal });
     text = await response.text();
   } catch (cause) {
     if (linked.timedOut()) {
@@ -107,6 +154,7 @@ async function sendJson<T>(url: string, init?: RequestInit): Promise<Envelope<T>
     try {
       const envelope = JSON.parse(text) as Partial<Envelope<T>>;
       if (typeof envelope.code === "number") {
+        if (envelope.code === AUTH_ERROR_CODE) envelope.msg = AUTH_ERROR_MESSAGE;
         return envelope as Envelope<T>;
       }
     } catch {
@@ -267,7 +315,11 @@ export function retryDownload(id: string): Promise<Envelope<DownloadTask>> {
  * returned ``url`` is an external share page the caller navigates to.
  */
 export function resolveDownloadFallback(id: string): Promise<Envelope<FallbackResolution>> {
-  return sendJson(`/api/v1/downloads/${encodeURIComponent(id)}/fallback`, { method: "POST" });
+  return sendJson(
+    `/api/v1/downloads/${encodeURIComponent(id)}/fallback`,
+    { method: "POST" },
+    FALLBACK_RESOLVE_TIMEOUT_MS,
+  );
 }
 
 export function listLibrary(): Promise<Envelope<{ items: LibraryAsset[] }>> {

@@ -42,6 +42,12 @@ _FULL_TTL_SEC = 45.0
 # 2.5x headroom while a hung provider cannot hold the whole search (and the
 # browser) for the 15 s per-request timeout.
 _SEARCH_BUDGET_SEC = 2.0
+# Library badges are annotated on every search, including suggestion lookups and
+# cache hits. Re-reading the whole track table and re-bucketing it for each
+# keystroke made that O(candidates x library rows); the buckets are now reused
+# for a few seconds. A download that finishes is picked up one TTL later, which
+# is well inside the debounce the UI already applies to its own badge.
+_LIBRARY_INDEX_TTL_SEC = 5.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,41 @@ class _CacheEntry:
     groups: list[_SearchGroup]
     platforms: list[dict[str, Any]]
     partial: bool
+
+
+@dataclass(frozen=True)
+class _LibraryRow:
+    """Detached copy of a library track, safe to keep in the index cache."""
+
+    position: int
+    id: str
+    title: str
+    artist: str
+    album: str | None = None
+    duration_ms: int | None = None
+    isrc: str | None = None
+    version: str | None = None
+
+    @classmethod
+    def from_row(cls, position: int, row: Any) -> _LibraryRow:
+        return cls(
+            position=position,
+            id=str(row.id),
+            title=str(row.title),
+            artist=str(row.artist),
+            album=row.album,
+            duration_ms=row.duration_ms,
+            isrc=row.isrc,
+            version=row.version,
+        )
+
+
+@dataclass(frozen=True)
+class _LibraryIndex:
+    """Library tracks bucketed by the same keys ``_merge_keys`` builds."""
+
+    buckets: dict[str, list[_LibraryRow]]
+    built_at: float
 
 
 def _merge_keys(track: TrackRef) -> tuple[str, ...]:
@@ -99,6 +140,7 @@ class SearchService:
         self._registry = registry
         self._session_factory = session_factory
         self._cache: dict[tuple[str, SearchKind, int], _CacheEntry] = {}
+        self._library_index: _LibraryIndex | None = None
 
     async def search(
         self,
@@ -199,10 +241,11 @@ class SearchService:
             platforms=platform_status,
             partial=partial,
         )
-        # A platform that ran out of budget is about to recover, so its absence
-        # must not be remembered: caching it would hide that platform for the
-        # whole TTL and the user's own retry could not bring it back.
-        if not any(item.get("reason") == "timeout" for item in platform_status):
+        # Only a fan-out that every platform answered may be remembered. A
+        # platform that timed out or failed is about to recover, and caching its
+        # absence would hide it for the whole TTL while the user's own retry
+        # could not bring it back.
+        if all(item["status"] != "error" for item in platform_status):
             self._store_cache(key, cached)
         return await self._payload_from_groups(cached)
 
@@ -431,24 +474,19 @@ class SearchService:
         if not tracks:
             return {}
         try:
+            index = self._fresh_library_index()
             async with self._session_factory() as session:
-                result = await session.execute(select(LibraryTrackRow))
-                rows = result.scalars().all()
-                if not rows:
-                    return {}
+                if index is None:
+                    result = await session.execute(select(LibraryTrackRow))
+                    index = self._build_library_index(result.scalars().all())
                 # Equality on stored (unfolded) keys misses 繁/简 and ISRC-only
                 # pairs; is_same_recording already folds, so match in Python.
-                matched_rows: list[Any] = []
-                seen_ids: set[str] = set()
-                for track in tracks:
-                    matched = self._matching_library_track(track, rows)
-                    if matched is None or matched.id in seen_ids:
-                        continue
-                    seen_ids.add(matched.id)
-                    matched_rows.append(matched)
+                # The index narrows that comparison to the candidates sharing a
+                # merge key, instead of scanning the whole table per request.
+                matched_rows = self._match_indexed_tracks(tracks, index)
                 if not matched_rows:
                     return {}
-                matched_ids = [row.id for row in matched_rows]
+                matched_ids = [row.id for row in matched_rows.values()]
                 assets_result = await session.execute(
                     select(LibraryAssetRow)
                     .where(
@@ -472,7 +510,46 @@ class SearchService:
         except SQLAlchemyError:
             return {}
 
-        return self._annotate_tracks(tracks, matched_rows, assets, tasks)
+        # Only the rows that already matched are re-checked, so the badge pass
+        # stays proportional to the candidates rather than to the library size.
+        return self._annotate_tracks(tracks, list(matched_rows.values()), assets, tasks)
+
+    def _fresh_library_index(self) -> _LibraryIndex | None:
+        index = self._library_index
+        if index is None or index.built_at + _LIBRARY_INDEX_TTL_SEC <= time.monotonic():
+            return None
+        return index
+
+    def _build_library_index(self, rows: Sequence[Any]) -> _LibraryIndex:
+        indexed = [_LibraryRow.from_row(position, row) for position, row in enumerate(rows)]
+        buckets: dict[str, list[_LibraryRow]] = {}
+        for row in indexed:
+            for key in _merge_keys(self._library_ref(row)):
+                buckets.setdefault(key, []).append(row)
+        index = _LibraryIndex(buckets=buckets, built_at=time.monotonic())
+        self._library_index = index
+        return index
+
+    @classmethod
+    def _match_indexed_tracks(
+        cls,
+        tracks: Sequence[TrackRef],
+        index: _LibraryIndex,
+    ) -> dict[str, _LibraryRow]:
+        """Map each track to the first matching library row, keyed by row id."""
+        matched: dict[str, _LibraryRow] = {}
+        for track in tracks:
+            candidates = [
+                row
+                for key in _merge_keys(track)
+                for row in index.buckets.get(key, ())
+                if is_same_recording(track, cls._library_ref(row))
+            ]
+            if not candidates:
+                continue
+            first = min(candidates, key=lambda row: row.position)
+            matched.setdefault(first.id, first)
+        return matched
 
     @classmethod
     def _annotate_tracks(

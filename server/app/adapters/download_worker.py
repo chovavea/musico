@@ -288,9 +288,7 @@ class DownloadWorker:
         candidates.sort(
             key=lambda item: (
                 item.quality.sort_key(),
-                self._sources.get(item.source_id).priority
-                if self._sources.get(item.source_id)
-                else 0,
+                self._source_priority(item.source_id),
             ),
             reverse=True,
         )
@@ -298,6 +296,11 @@ class DownloadWorker:
             return candidates
         await session.commit()
         return candidates
+
+    def _source_priority(self, source_id: str) -> int:
+        """Configured priority of a source, so an unknown source sorts last."""
+        source = self._sources.get(source_id)
+        return source.priority if source is not None else 0
 
     async def _download(
         self,
@@ -374,8 +377,7 @@ class DownloadWorker:
                 if total > self._settings.download_max_file_size:
                     raise ValueError("download exceeds configured size limit")
                 digest = hashlib.sha256()
-                mode = "ab" if offset else "wb"
-                with part_path.open(mode) as output:
+                with part_path.open("ab" if offset else "wb") as output:
                     if offset:
                         await asyncio.to_thread(_hash_file_start, part_path, digest)
                     async for chunk in response.aiter_bytes(1024 * 1024):
@@ -506,7 +508,7 @@ def _track_from_row(row: LibraryTrackRow) -> TrackRef:
     )
 
 
-def _now():
+def _now() -> datetime:
     return datetime.now(UTC)
 
 

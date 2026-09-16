@@ -66,6 +66,25 @@ test("latest requests are deduplicated per board and expose loading state", asyn
   assert.equal(store.latestLoading["board-a"], undefined);
 });
 
+test("a board without a snapshot is a cold-start state, not an error", async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        code: 40402,
+        data: { board_id: "board-a", staleness: "missing", items: [] },
+        msg: "snapshot missing",
+      }),
+      { status: 404 },
+    );
+
+  await store.refreshLatest("board-a");
+
+  assert.equal(store.latestErrors["board-a"], undefined);
+  assert.equal(store.error, "");
+  assert.equal(store.latest["board-a"].staleness, "missing");
+  assert.deepEqual(store.latest["board-a"].items, []);
+});
+
 test("a successful board refresh does not clear another board error", async () => {
   globalThis.fetch = async (url) =>
     String(url).includes("board-a")
