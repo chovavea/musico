@@ -138,6 +138,19 @@ npm run dev
 - **下载 worker 是单实例设计**：`.part` 续传文件与任务租约强相关，当前数据库租约只保护写库、不保护同一任务跨进程写同一磁盘文件；请勿对 musico 服务水平扩容多个副本，也不要为同一 `MUSIC_LIBRARY_DIR` 挂载启动第二个 worker。
 - 榜单抓取与下载使用独立的 HTTP 客户端与连接池，长连接大文件不会拖慢抓榜/健康检查；预览与下载各有独立的读超时。
 
+## 前端缓存与 PWA
+
+- **静态资源分三档缓存**（`server/app/main.py` 的 `SPAStaticFiles`）：`/assets/*` 是带构建哈希的产物，回
+  `Cache-Control: public, max-age=31536000, immutable`；`index.html` 与所有客户端路由回落回 `no-cache`，
+  必须每次回源校验，否则旧入口页会去引用新镜像里已删除的旧哈希资源；`public/` 下的图标与
+  `manifest.webmanifest` 回 `public, max-age=86400`。改档位前先想清楚「旧 HTML 配新资源」这条路径。
+- **不放 Service Worker**：前端已移除 `web/public/sw.js` 与注册代码，没有离线缓存能力。榜单靠 `staleness` +
+  60 秒轮询、试听签名地址 10 分钟过期，缓存下来的基本是过期数据；SW 还会在「每次部署都换资源哈希」的节奏下
+  放大白屏风险，并介入带 `X-API-Token` 的写请求。若以后要加，只做静态壳 precache、`/api/**` 一律 bypass、
+  入口页 network-first。
+- Web App manifest 与 `apple-touch-icon` 保留，只服务「添加到主屏幕 / standalone 打开」，不需要 SW；Chrome
+  的安装条件另要求 HTTPS 与 192px / 512px 图标，内网纯 HTTP 访问只能当普通网页用。
+
 ## 完成定义
 
 - `docker compose up -d` 后 Alembic 自动建表

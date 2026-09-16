@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator, MutableMapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
+from starlette.types import Scope
 
 from app.adapters.download_worker import DownloadWorker
 from app.adapters.http.middleware import (
@@ -41,6 +43,24 @@ from app.settings import Settings, export_env_file, get_settings
 log = structlog.get_logger(__name__)
 
 
+# 静态资源缓存分档：`web/dist/assets/` 的文件名带构建哈希，可以长缓存；入口页与客户端路由
+# 回落都必须每次回源校验，否则旧 index.html 会去引用新镜像里已不存在的旧哈希资源（白屏）；
+# `public/` 下的图标与 manifest 没有哈希，缓存一天。
+IMMUTABLE_ASSETS_CACHE_CONTROL = "public, max-age=31536000, immutable"
+ENTRY_CACHE_CONTROL = "no-cache"
+PUBLIC_FILE_CACHE_CONTROL = "public, max-age=86400"
+
+
+def static_cache_control(served_path: str) -> str:
+    """Pick the `Cache-Control` for a file served out of `web/dist`."""
+    normalized = served_path.replace("\\", "/").lstrip("/")
+    if normalized.startswith("assets/"):
+        return IMMUTABLE_ASSETS_CACHE_CONTROL
+    if Path(normalized).name == "index.html":
+        return ENTRY_CACHE_CONTROL
+    return PUBLIC_FILE_CACHE_CONTROL
+
+
 class SPAStaticFiles(StaticFiles):
     """Serve the Vue entrypoint for client-side routes while preserving asset 404s."""
 
@@ -58,6 +78,29 @@ class SPAStaticFiles(StaticFiles):
             ):
                 return await super().get_response("index.html", scope)
             raise
+
+    def file_response(
+        self,
+        full_path: str | os.PathLike[str],
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        """按实际落盘的文件挂缓存策略。
+
+        `/` 与客户端路由回落都落到 `index.html`，所以档位只能按落盘文件判定、不能按请求路径；
+        304 也要带上同一个头，浏览器才会按新策略更新已缓存的条目。
+        """
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        if response.status_code < 300 or response.status_code == 304:
+            response.headers.setdefault("cache-control", self._cache_control(full_path))
+        return response
+
+    def _cache_control(self, full_path: str | os.PathLike[str]) -> str:
+        directory = self.directory
+        if directory is None:
+            return static_cache_control(str(full_path))
+        return static_cache_control(os.path.relpath(full_path, directory))
 
 
 def _resolve_boards_path(settings: Settings) -> Path:
