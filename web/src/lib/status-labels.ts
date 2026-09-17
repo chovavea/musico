@@ -17,15 +17,19 @@ export function downloadStatusLabel(status: DownloadStatus): string {
 export function downloadErrorLabel(error: string | null | undefined): string {
   if (!error) return "";
   const normalized = error.toLowerCase();
-  if (
-    normalized.includes("no matching download source") ||
-    normalized.includes("no download source matches")
-  ) {
+  if (normalized.includes("access limited")) {
+    return "下载源今日访问已达上限，请稍后再试";
+  }
+  if (normalized.includes("no download source matches")) {
     return "暂时没有符合音质要求的下载源";
+  }
+  if (normalized.includes("no matching download source")) {
+    return "下载源没有匹配到这首歌，可稍后重试";
   }
   if (normalized.includes("timeout")) return "连接下载源超时，请稍后重试";
   if (normalized.includes("not found") || normalized.includes("404")) {
     return "下载源已失效";
   }
+  if (/[\u4e00-\u9fff]/.test(error)) return error;
   return "下载未完成，可稍后重试";
 }

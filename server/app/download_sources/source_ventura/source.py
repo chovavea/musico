@@ -21,6 +21,7 @@ from app.domain.models import (
     is_allowed_download_format,
     normalize_audio_format,
 )
+from app.download_sources.protocol import DownloadSourceAccessLimited
 
 log = structlog.get_logger(__name__)
 
@@ -103,11 +104,18 @@ class VenturaSource:
         results: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for path in _SEARCH_API_PATHS:
+            response: httpx.Response | None = None
             try:
                 response = await self._post_json(path, payload)
                 response.raise_for_status()
                 data = response.json()
-            except (httpx.HTTPError, ValueError):
+            except httpx.HTTPError:
+                continue
+            except ValueError:
+                if response is not None and _html_access_limited(response.text):
+                    raise DownloadSourceAccessLimited(
+                        "download source access limited"
+                    ) from None
                 continue
             if not isinstance(data, dict) or not isinstance(data.get("result"), list):
                 continue
@@ -172,7 +180,12 @@ class VenturaSource:
             ),
             return_exceptions=True,
         )
-        return [item for item in pages if isinstance(item, DownloadCandidate)]
+        candidates = [item for item in pages if isinstance(item, DownloadCandidate)]
+        if candidates:
+            return candidates
+        if any(isinstance(item, DownloadSourceAccessLimited) for item in pages):
+            raise DownloadSourceAccessLimited("download source access limited")
+        return []
 
     async def _load_candidate(
         self,
@@ -193,7 +206,9 @@ class VenturaSource:
         html = response.text
         page_data = _extract_page_data(html, detail_url)
         if not page_data.download_url:
-            _log_access_limited(html, detail_url)
+            if _html_access_limited(html):
+                _log_access_limited(html, detail_url)
+                raise DownloadSourceAccessLimited("download source access limited")
             return None
         title = page_data.title or str(item.get("name") or track.title)
         artist = page_data.artist or str(item.get("player") or track.artist)
@@ -246,7 +261,9 @@ class VenturaSource:
         response.raise_for_status()
         download_url = _find_download_url(response.text, detail_url)
         if not download_url:
-            _log_access_limited(response.text, detail_url)
+            if _html_access_limited(response.text):
+                _log_access_limited(response.text, detail_url)
+                raise DownloadSourceAccessLimited("download source access limited")
             raise ValueError("ventura page has no direct download link")
         headers = {"Referer": self._referer}
         if offset > 0:
@@ -307,8 +324,12 @@ def _hosts_for_base_url(base_url: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(hosts))
 
 
+def _html_access_limited(html: str) -> bool:
+    return any(marker in html for marker in _ACCESS_LIMITED_MARKERS)
+
+
 def _log_access_limited(html: str, url: str) -> None:
-    if any(marker in html for marker in _ACCESS_LIMITED_MARKERS):
+    if _html_access_limited(html):
         log.warning("download_source_access_limited", source_id="ventura", url=url)
 
 

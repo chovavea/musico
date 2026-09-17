@@ -15,7 +15,7 @@ from app.adapters.http.safety import (
     assert_outbound_url_allowed,
     host_matches,
 )
-from app.domain.matching import fuzzy_preview_rank, is_auto_match
+from app.domain.matching import fuzzy_preview_rank, is_auto_match, is_listen_match
 from app.domain.models import TrackRef
 
 log = structlog.get_logger(__name__)
@@ -171,7 +171,7 @@ class SonomaFallback:
     ) -> AsyncIterator[PreviewClip]:
         """Yield in-page listen URLs, one matched song page at a time."""
         try:
-            hits = await self._matched_hits(track, match=match or is_auto_match)
+            hits = await self._matched_hits(track, match=match or is_listen_match)
         except (httpx.HTTPError, ValueError) as exc:
             log.info("sonoma_preview_search_unavailable", error_type=type(exc).__name__)
             return
@@ -295,6 +295,7 @@ def _hit_ref(hit: SongHit) -> TrackRef:
         external_id=hit.path,
         title=hit.title,
         artist=hit.artist,
+        version=hit.label or None,
     )
 
 

@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { comingSoon } from "../lib/coming-soon";
 import { formatClock } from "../lib/format";
 import { usePlayerStore } from "../stores/player";
+import { useThemeStore } from "../stores/theme";
 import AppIcon from "./AppIcon.vue";
 import CoverImage from "./CoverImage.vue";
 
 const player = usePlayerStore();
+const theme = useThemeStore();
 const percent = computed(() => Math.round(player.progress * 1000) / 10);
 const dragging = ref(false);
 const root = ref<HTMLElement | null>(null);
@@ -91,6 +94,98 @@ function onSeekKey(event: KeyboardEvent) {
 
 <template>
   <footer
+    v-if="theme.isGlaze"
+    ref="root"
+    class="gz-player"
+    aria-label="播放器"
+  >
+    <div
+      role="slider"
+      tabindex="0"
+      class="absolute left-3.5 right-3.5 top-0 z-10 h-5 cursor-pointer touch-none"
+      :class="!player.duration ? 'cursor-default' : ''"
+      aria-label="播放进度"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="Math.round(player.progress * 100)"
+      :aria-disabled="!player.duration"
+      @pointerdown="onSeekPointer"
+      @pointermove="onSeekPointer"
+      @pointerup="onSeekEnd"
+      @pointercancel="onSeekEnd"
+      @keydown="onSeekKey"
+    >
+      <span class="gz-player-progress pointer-events-none">
+        <span :style="{ width: `${percent}%` }" />
+      </span>
+    </div>
+    <div class="gz-player-body">
+      <div class="flex min-w-0 items-center gap-3">
+        <CoverImage
+          :src="player.current?.cover_url"
+          :size="150"
+          :alt="player.current?.title ?? ''"
+          class="h-11 w-11 shrink-0 rounded-xl object-cover"
+        />
+        <div class="min-w-0">
+          <div class="gz-title">{{ player.current?.title }}</div>
+          <div class="gz-artist" :class="player.failed ? 'text-rose-400' : ''">
+            {{ statusText }}
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          class="gz-ghost gz-player-skip"
+          aria-label="上一首"
+          :disabled="!player.hasPrev"
+          @click="player.prev()"
+        >
+          <AppIcon name="chevron-left" :size="20" />
+        </button>
+        <button type="button" class="gz-ghost" :aria-label="toggleLabel" @click="player.toggle()">
+          <AppIcon :name="player.loading ? 'spinner' : player.playing ? 'pause' : 'play'" :size="20" />
+        </button>
+        <button
+          type="button"
+          class="gz-ghost gz-player-skip"
+          aria-label="下一首"
+          :disabled="!player.hasNext"
+          @click="player.next()"
+        >
+          <AppIcon name="chevron-right" :size="20" />
+        </button>
+        <button
+          type="button"
+          class="gz-ghost gz-player-queue-mobile"
+          aria-label="播放列表"
+          @click="comingSoon('播放列表')"
+        >
+          <AppIcon name="queue" :size="18" />
+        </button>
+      </div>
+      <div class="gz-player-extra">
+        <span class="tabular text-xs text-[color:var(--gz-muted)]">
+          {{ formatClock(player.currentTime) }} / {{ formatClock(player.duration) }}
+        </span>
+        <button
+          v-if="player.current?.official_url"
+          type="button"
+          class="gz-ghost"
+          aria-label="打开官方页面"
+          @click="player.openOfficial(player.current)"
+        >
+          <AppIcon name="external" :size="17" />
+        </button>
+        <button type="button" class="gz-ghost" aria-label="播放列表" @click="comingSoon('播放列表')">
+          <AppIcon name="queue" :size="18" />
+        </button>
+      </div>
+    </div>
+  </footer>
+  <footer
+    v-else
     ref="root"
     class="fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 bg-white/95 pb-[env(safe-area-inset-bottom,0px)] backdrop-blur-md dark:border-white/10 dark:bg-zinc-950/95"
     aria-label="播放器"
@@ -98,7 +193,7 @@ function onSeekKey(event: KeyboardEvent) {
     <div
       role="slider"
       tabindex="0"
-      class="relative flex h-4 w-full cursor-pointer touch-none items-center focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2"
+      class="relative flex h-4 w-full cursor-pointer touch-none items-center focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-zinc-400 dark:focus-visible:outline-zinc-600"
       :class="!player.duration ? 'cursor-default' : ''"
       aria-label="播放进度"
       aria-valuemin="0"
@@ -127,8 +222,8 @@ function onSeekKey(event: KeyboardEvent) {
             class="h-11 w-11 shrink-0 rounded-lg object-cover"
           />
           <div class="min-w-0">
-            <div class="truncate text-sm font-medium">{{ player.current?.title }}</div>
-            <div class="truncate text-xs" :class="player.failed ? 'text-rose-600 dark:text-rose-300' : 'text-secondary'">
+            <div class="type-title truncate">{{ player.current?.title }}</div>
+            <div class="truncate text-[0.74rem]" :class="player.failed ? 'text-rose-600 dark:text-rose-300' : 'text-artist'">
               {{ statusText }}
             </div>
           </div>

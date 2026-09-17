@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
-import { getApiToken, setApiToken } from "../api";
+import { downloadErrorLabel } from "../lib/status-labels";
 import { useHealthStore } from "../stores/health";
 import { useThemeStore, type StyleThemeId } from "../stores/theme";
 import { useDownloadsStore } from "../stores/downloads";
 import AppIcon from "./AppIcon.vue";
+
+withDefaults(
+  defineProps<{
+    variant?: "menu" | "avatar";
+  }>(),
+  { variant: "menu" },
+);
 
 const theme = useThemeStore();
 const health = useHealthStore();
@@ -14,9 +21,6 @@ const route = useRoute();
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
 const trigger = ref<HTMLButtonElement | null>(null);
-const apiToken = ref("");
-const tokenSaved = ref(false);
-let tokenSavedTimer = 0;
 
 const statusLabel = computed(() => {
   if (health.error) return "异常";
@@ -61,25 +65,10 @@ function chooseStyle(id: StyleThemeId) {
   theme.setStyleTheme(id);
 }
 
-function loadApiToken() {
-  apiToken.value = getApiToken();
-}
-
-function saveApiToken() {
-  setApiToken(apiToken.value);
-  apiToken.value = getApiToken();
-  tokenSaved.value = true;
-  window.clearTimeout(tokenSavedTimer);
-  tokenSavedTimer = window.setTimeout(() => {
-    tokenSaved.value = false;
-  }, 2000);
-}
-
 function toggle() {
   open.value = !open.value;
   if (open.value) {
     // 空闲时轮询已停止；打开菜单时刷新一次任务/曲库计数。
-    loadApiToken();
     void downloads.refreshSummary();
     if (!downloads.libraryLoaded) void downloads.loadLibrary();
   }
@@ -88,7 +77,6 @@ function toggle() {
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onDocKey);
-  loadApiToken();
   void downloads.refreshSummary();
   if (!downloads.libraryLoaded) void downloads.loadLibrary();
   downloads.startPolling();
@@ -96,7 +84,6 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onDocKey);
-  window.clearTimeout(tokenSavedTimer);
   downloads.stopPolling();
 });
 </script>
@@ -106,15 +93,43 @@ onUnmounted(() => {
     <button
       ref="trigger"
       type="button"
-      class="grid h-11 w-11 place-items-center rounded-full text-zinc-500 ring-1 ring-zinc-300 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white"
-      :class="open ? 'bg-zinc-100 text-zinc-900 dark:bg-white/10 dark:text-white' : ''"
+      :class="
+        variant === 'avatar'
+          ? 'gz-avatar grid place-items-center'
+          : [
+              'grid h-11 w-11 place-items-center rounded-full text-zinc-500 ring-1 ring-zinc-300 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white',
+              open ? 'bg-zinc-100 text-zinc-900 dark:bg-white/10 dark:text-white' : '',
+            ]
+      "
       :aria-expanded="open"
       aria-controls="settings-menu"
       aria-haspopup="dialog"
       aria-label="配置"
       @click.stop="toggle()"
     >
-      <AppIcon v-if="!downloads.active" name="menu" :size="20" />
+      <svg
+        v-if="variant === 'avatar' && !downloads.active"
+        viewBox="0 0 40 40"
+        class="h-full w-full"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="gz-avatar-bg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#f5d0c5" />
+            <stop offset="100%" stop-color="#d4b5a0" />
+          </linearGradient>
+        </defs>
+        <rect width="40" height="40" fill="url(#gz-avatar-bg)" />
+        <ellipse cx="20" cy="24" rx="11" ry="10" fill="#c4a484" />
+        <circle cx="12" cy="14" r="5.2" fill="#b08968" />
+        <circle cx="28" cy="14" r="5.2" fill="#b08968" />
+        <circle cx="20" cy="22" r="8.5" fill="#e7c7a8" />
+        <ellipse cx="16.2" cy="22.2" rx="1.1" ry="1.5" fill="#3f2a1d" />
+        <ellipse cx="23.8" cy="22.2" rx="1.1" ry="1.5" fill="#3f2a1d" />
+        <path d="M18.4 26.2c1.2 1.1 2.2 1.1 3.2 0" stroke="#a1624a" stroke-width="1.2" stroke-linecap="round" />
+        <path d="M20 23.4v2.1" stroke="#c08457" stroke-width="1.1" stroke-linecap="round" />
+      </svg>
+      <AppIcon v-else-if="!downloads.active" name="menu" :size="20" />
       <svg v-else viewBox="0 0 36 36" class="h-7 w-7 -rotate-90" aria-hidden="true">
         <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-opacity=".18" stroke-width="3" />
         <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" :stroke-dasharray="`${downloads.percent * 0.8796} 87.96`" />
@@ -128,7 +143,7 @@ onUnmounted(() => {
       <div v-if="downloads.actionError" class="flex items-start gap-2">
         <div class="min-w-0 flex-1">
           <div class="font-medium">下载操作失败</div>
-          <div class="mt-1 break-words text-xs">{{ downloads.actionError }}</div>
+          <div class="mt-1 break-words text-xs">{{ downloadErrorLabel(downloads.actionError) || downloads.actionError }}</div>
         </div>
         <button
           type="button"
@@ -173,7 +188,7 @@ onUnmounted(() => {
     <div
       v-if="open"
       id="settings-menu"
-      class="menu-popover absolute right-0 top-full z-30 mt-1.5 w-60 rounded-2xl bg-white p-1.5 shadow-lg ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
+      class="menu-popover absolute right-0 top-full z-30 mt-1.5 w-72 rounded-2xl bg-white p-1.5 shadow-lg ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
       role="dialog"
       aria-label="配置"
     >
@@ -241,24 +256,6 @@ onUnmounted(() => {
             {{ item.name }}
           </button>
         </div>
-      </div>
-      <div class="flex h-11 items-center gap-2 px-2">
-        <label class="shrink-0 text-sm" for="api-token">接口令牌</label>
-        <input
-          id="api-token"
-          v-model="apiToken"
-          type="password"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="同 API_TOKEN"
-          class="h-8 w-full min-w-0 rounded-full bg-zinc-100 px-3 text-xs outline-none ring-1 ring-transparent transition placeholder:text-zinc-400 focus:bg-white focus:ring-zinc-300 dark:bg-zinc-800 dark:focus:bg-zinc-800 dark:focus:ring-white/20"
-          @change="saveApiToken"
-          @blur="saveApiToken"
-          @keydown.enter.prevent="saveApiToken"
-        />
-        <span v-if="tokenSaved" class="shrink-0 text-xs text-emerald-600 dark:text-emerald-300">
-          已保存
-        </span>
       </div>
       <div class="mx-2 h-px bg-zinc-100 dark:bg-white/10" role="separator" />
       <RouterLink

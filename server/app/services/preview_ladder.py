@@ -8,8 +8,9 @@ from app.services.preview_telemetry import RATES, RateStore
 
 
 class SourceKind(StrEnum):
-    """Stable source categories; callers only rank sources from one category."""
+    """Provider families. Priors stay per-kind; ranking may mix families."""
 
+    OFFICIAL = "official"
     CROSS_OFFICIAL = "cross_official"
     DOWNLOAD = "download"
     CLIP = "clip"
@@ -25,6 +26,7 @@ class KindProfile:
 
 
 _BASE_PROFILES = {
+    SourceKind.OFFICIAL: KindProfile(0.7, 0.4),
     SourceKind.CROSS_OFFICIAL: KindProfile(0.55, 1.5),
     SourceKind.DOWNLOAD: KindProfile(0.35, 3.0),
     SourceKind.CLIP: KindProfile(0.5, 2.0),
@@ -68,6 +70,8 @@ class PreviewSource:
 
     @property
     def stat_key(self) -> str:
+        if self.kind is SourceKind.OFFICIAL:
+            return f"official:{self.source_id}"
         if self.kind is SourceKind.CROSS_OFFICIAL:
             return self.source_id
         if self.kind is SourceKind.DOWNLOAD:
@@ -103,10 +107,9 @@ def score_source(
 ) -> SourceScore:
     """Estimate the time paid for one successful result from this provider.
 
-    For serial alternatives with equal semantic value, ordering by ``time / P``
-    minimizes expected time to the first success. A bounded UCB bonus keeps new
-    or recovered providers observable without allowing a lower-trust category
-    to jump ahead: mixed categories are rejected by ``order_sources``.
+    For serial alternatives, ordering by ``time / P`` minimizes expected time to
+    the first success. A bounded UCB bonus keeps new or recovered providers
+    observable. Each source still uses the prior of its own kind.
     """
     tuning = tuning or AdaptiveTuning()
     profile = tuning.profile(source.kind)
@@ -148,15 +151,13 @@ def order_sources(
     tuning: AdaptiveTuning | None = None,
     adaptive: bool = True,
 ) -> list[PreviewSource]:
-    """Rank one category; the fixed ladder is the cold-start tie-break order.
+    """Rank providers by expected time to a playable stream.
 
-    The HTTP layer asks providers in this order and may hedge a second source
-    after a delay. Mixed categories are rejected so a lower-trust tier cannot
-    jump ahead.
+    ``order_index`` is the cold-start / non-adaptive ladder position and only
+    breaks ties. Kinds may be mixed so a fast clip can outrank a slow download
+    source; callers that still want a fixed trust order keep those providers in
+    a separate list.
     """
-    kinds = {source.kind for source in sources}
-    if len(kinds) > 1:
-        raise ValueError("preview source categories must be ordered separately")
     if not adaptive:
         return sorted(sources, key=lambda source: (source.order_index, source.source_id))
     return sorted(

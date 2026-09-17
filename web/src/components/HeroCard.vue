@@ -3,23 +3,52 @@ import { computed } from "vue";
 import { useCoverPalette } from "../composables/useCoverTint";
 import { chartShortName, platformLabel } from "../lib/boards";
 import { usePlayerStore } from "../stores/player";
+import { useThemeStore } from "../stores/theme";
 import type { BoardInfo, LatestBoard, RankItem } from "../types";
 import CoverImage from "./CoverImage.vue";
 import TrackDownloadAction from "./TrackDownloadAction.vue";
 
 const props = defineProps<{ board: BoardInfo; latest?: LatestBoard }>();
 const player = usePlayerStore();
+const theme = useThemeStore();
 
 const topFive = computed(() => props.latest?.items.slice(0, 5) ?? []);
 const top = computed(() => topFive.value[0]);
-const coverUrl = computed(() => top.value?.cover_url ?? null);
-const palette = useCoverPalette(coverUrl);
+const followAmbient = computed(() => theme.isPulse && !theme.dark);
+const washCoverUrl = computed(() => {
+  if (followAmbient.value) {
+    const playing = player.current?.cover_url?.trim();
+    if (playing) return playing;
+  }
+  return top.value?.cover_url ?? null;
+});
+const featured = computed(() => {
+  if (!followAmbient.value) return top.value;
+  const current = player.current;
+  if (
+    current &&
+    topFive.value.some(
+      (item) => item.platform === current.platform && item.external_id === current.external_id,
+    )
+  ) {
+    return current;
+  }
+  return top.value;
+});
+const palette = useCoverPalette(washCoverUrl);
+const heroBg = computed(() => (followAmbient.value ? "var(--surface)" : palette.value.bg));
+const heroHover = computed(() =>
+  followAmbient.value ? "rgb(24 24 27 / 0.06)" : palette.value.hover,
+);
+const heroActive = computed(() =>
+  followAmbient.value ? "rgb(24 24 27 / 0.1)" : palette.value.active,
+);
 
 function rankKlass(rank: number): string {
-  if (rank === 1) return "text-amber-800 dark:text-amber-300";
-  if (rank === 2) return "text-zinc-700 dark:text-zinc-300";
-  if (rank === 3) return "text-amber-700 dark:text-amber-400";
-  return "text-zinc-600 dark:text-zinc-300";
+  if (rank === 1) return "text-[1.15rem] font-extrabold text-amber-800 dark:text-amber-300";
+  if (rank === 2) return "text-[0.95rem] font-extrabold text-zinc-700 dark:text-zinc-300";
+  if (rank === 3) return "text-[0.95rem] font-extrabold text-amber-700 dark:text-amber-400";
+  return "text-[0.95rem] font-extrabold text-zinc-600 dark:text-zinc-300";
 }
 
 function isCurrent(item: RankItem): boolean {
@@ -40,16 +69,17 @@ function onPlay(item?: RankItem) {
 <template>
   <article
     class="relative overflow-hidden rounded-2xl"
+    :class="followAmbient ? 'ring-1 ring-zinc-200/80' : ''"
     :style="{
-      backgroundColor: palette.bg,
-      '--hero-hover': palette.hover,
-      '--hero-active': palette.active,
+      backgroundColor: heroBg,
+      '--hero-hover': heroHover,
+      '--hero-active': heroActive,
     }"
   >
-    <div aria-hidden="true" class="pointer-events-none absolute inset-0">
+    <div v-if="!followAmbient" aria-hidden="true" class="pointer-events-none absolute inset-0">
       <CoverImage
-        v-if="coverUrl"
-        :src="coverUrl"
+        v-if="washCoverUrl"
+        :src="washCoverUrl"
         :size="500"
         eager
         alt=""
@@ -61,18 +91,18 @@ function onPlay(item?: RankItem) {
       <button
         type="button"
         class="relative h-24 w-24 shrink-0 overflow-hidden rounded-xl sm:h-32 sm:w-32 sm:rounded-2xl md:h-36 md:w-36"
-        :style="{ backgroundColor: palette.bg }"
-        :disabled="!top"
-        :aria-label="top ? `播放 ${top.title} · ${top.artist}` : undefined"
-        @click="onPlay(top)"
+        :style="{ backgroundColor: heroBg }"
+        :disabled="!featured"
+        :aria-label="featured ? `播放 ${featured.title} · ${featured.artist}` : undefined"
+        @click="onPlay(featured)"
       >
         <CoverImage
-          v-if="top"
-          :src="top.cover_url"
+          v-if="featured"
+          :src="featured.cover_url"
           :size="500"
           eager
           class="h-full w-full object-cover transition duration-200 hover:-translate-y-0.5"
-          :alt="top.title"
+          :alt="featured.title"
         />
         <div v-else class="skel h-full w-full" />
       </button>
@@ -80,7 +110,12 @@ function onPlay(item?: RankItem) {
         <div class="flex flex-wrap items-center gap-2 text-xs">
           <span
             class="rounded-full px-2 py-0.5 font-medium"
-            :style="{ backgroundColor: palette.chipBg, color: palette.chipFg }"
+            :class="followAmbient ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : ''"
+            :style="
+              followAmbient
+                ? undefined
+                : { backgroundColor: palette.chipBg, color: palette.chipFg }
+            "
           >
             {{ platformLabel(board.platform) }}
           </span>
@@ -105,12 +140,12 @@ function onPlay(item?: RankItem) {
                 :aria-label="`播放 ${item.title} · ${item.artist}`"
                 @click="onPlay(item)"
               />
-              <span class="pointer-events-none tabular text-right text-sm font-semibold" :class="rankKlass(item.rank)">
+              <span class="pointer-events-none tabular text-right tracking-[0.02em]" :class="rankKlass(item.rank)">
                 {{ item.rank }}
               </span>
               <span class="pointer-events-none min-w-0">
-                <span class="block truncate text-sm font-medium">{{ item.title }}</span>
-                <span class="block truncate text-xs text-zinc-700 dark:text-zinc-300">
+                <span class="type-title block truncate">{{ item.title }}</span>
+                <span class="block truncate text-[0.74rem] text-artist">
                   {{ item.artist }}
                 </span>
               </span>

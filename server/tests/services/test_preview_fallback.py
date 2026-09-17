@@ -9,7 +9,7 @@ import httpx
 import pytest
 from app.adapters.http import preview
 from app.adapters.http.routes import build_router
-from app.domain.matching import is_fuzzy_preview_match
+from app.domain.matching import is_fuzzy_listen_match, is_listen_match
 from app.domain.models import (
     AudioQuality,
     DownloadCandidate,
@@ -17,6 +17,7 @@ from app.domain.models import (
     PreviewInfo,
     TrackRef,
 )
+from app.download_sources.protocol import DownloadSourceAccessLimited
 from app.download_sources.registry import DownloadSourceRecord, DownloadSourceRegistry
 from app.fallback.sonoma import PreviewClip
 from app.plugins._registry import PluginRecord, PluginRegistry
@@ -46,7 +47,12 @@ class Official:
 
 class Source:
     def __init__(
-        self, source_id: str, *, search_fails: bool = False, resolve_fails: bool = False
+        self,
+        source_id: str,
+        *,
+        search_fails: bool = False,
+        resolve_fails: bool = False,
+        access_limited: bool = False,
     ) -> None:
         self.source_id = source_id
         self.candidates = [candidate(source_id)]
@@ -54,10 +60,13 @@ class Source:
         self.resolved: list[str] = []
         self.search_fails = search_fails
         self.resolve_fails = resolve_fails
+        self.access_limited = access_limited
         self.headers: dict[str, str] = {}
 
     async def search(self, track: TrackRef) -> list[DownloadCandidate]:
         self.searched.append(track)
+        if self.access_limited:
+            raise DownloadSourceAccessLimited("download source access limited")
         if self.search_fails:
             raise ValueError("search unavailable")
         return self.candidates
@@ -160,6 +169,30 @@ async def test_official_audio_still_takes_precedence() -> None:
     assert response.content == b"fLaC-audio"
     assert official.calls == 1
     assert not source.searched
+
+
+async def test_official_snippet_falls_back_to_a_complete_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        preview,
+        "_audio_duration_ms",
+        lambda header: 269_000 if header.startswith(b"fLaC") else 30_000,
+    )
+    source = Source("backup")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "music.163.com":
+            return httpx.Response(
+                200, content=b"ID3-official-clip", headers={"Content-Type": "audio/mpeg"}
+            )
+        return audio(request)
+
+    async with client_for(Official(OFFICIAL_URL), [record(source)], handler) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == b"fLaC-audio"
+    assert source.resolved == ["song"]
 
 
 @pytest.mark.parametrize("official", [None, Official(), Official(fails=True)])
@@ -392,6 +425,18 @@ async def test_download_only_skips_an_already_failed_official_player() -> None:
     assert source.resolved == ["song"]
 
 
+async def test_download_only_does_not_borrow_listen_clips() -> None:
+    source = Source("backup")
+    gequbao = GequbaoClips()
+    async with client_for(
+        Official(), [record(source)], audio, gequbao=gequbao
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS | {"download_only": "true"})
+    assert response.status_code == 200
+    assert source.resolved == ["song"]
+    assert gequbao.asked == []
+
+
 async def test_one_failed_site_does_not_prevent_later_sites() -> None:
     failed_search = Source("a", search_fails=True)
     failed_resolve = Source("b", resolve_fails=True)
@@ -441,12 +486,24 @@ async def test_candidates_must_match_track_and_be_browser_playable() -> None:
         candidate("backup", duration_ms=100_000),
         candidate("another"),
         candidate("backup", quality=AudioQuality(format="dsf")),
+        candidate("backup", version="铃声", source_track_id="ringtone"),
         candidate("backup", source_track_id="correct"),
     ]
     async with client_for(Official(), [record(source)], audio) as client:
         response = await client.get(ENDPOINT, params=PARAMS)
     assert response.status_code == 200
     assert source.resolved == ["correct"]
+
+
+async def test_listen_skips_a_short_audio_stream_when_the_track_is_full_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(preview, "_audio_duration_ms", lambda _header: 30_000)
+    source = Source("backup")
+    async with client_for(Official(), [record(source)], audio) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 404
+    assert source.resolved == ["song"]
 
 
 async def test_listening_prefers_smaller_audio_but_retries_other_qualities() -> None:
@@ -669,10 +726,17 @@ async def test_sonoma_clip_plays_after_official_and_download_sources_miss() -> N
     assert fallback.asked == [TRACK]
 
 
-async def test_download_sources_still_beat_the_sonoma_clip() -> None:
+async def test_fixed_order_keeps_download_sources_ahead_of_the_sonoma_clip() -> None:
     fallback = ClipFallback()
     source = Source("backup")
-    async with client_for(Official(), [record(source)], audio, fallback=fallback) as client:
+    settings = SimpleNamespace(preview_adaptive_order=False)
+    async with client_for(
+        Official(),
+        [record(source)],
+        audio,
+        fallback=fallback,
+        settings=settings,
+    ) as client:
         response = await client.get(ENDPOINT, params=PARAMS)
     assert response.status_code == 200
     assert response.content == b"fLaC-audio"
@@ -845,6 +909,55 @@ async def test_flmp3_clip_still_beats_gequbao() -> None:
     assert gequbao.asked == []
 
 
+async def test_a_clip_can_play_without_waiting_for_download_sources() -> None:
+    source = Source("backup")
+    gequbao = GequbaoClips()
+    async with client_for(
+        Official(), [record(source, priority=10)], listen_audio, gequbao=gequbao
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == GEQUBAO_BODY
+    assert gequbao.asked == [TRACK]
+    assert source.searched == []
+
+
+async def test_disabling_adaptive_order_keeps_download_sources_before_clips() -> None:
+    source = Source("backup")
+    gequbao = GequbaoClips()
+    settings = SimpleNamespace(preview_adaptive_order=False)
+    async with client_for(
+        Official(),
+        [record(source, priority=10)],
+        audio,
+        gequbao=gequbao,
+        settings=settings,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert source.resolved == ["song"]
+    assert gequbao.asked == []
+
+
+async def test_a_fast_download_source_still_outranks_clips() -> None:
+    source = Source("backup")
+    gequbao = GequbaoClips()
+    for _ in range(4):
+        preview_telemetry.RATES.record(
+            TRACK.platform, "download:backup", True, latency_ms=200
+        )
+        preview_telemetry.RATES.record(
+            TRACK.platform, "clip:gequbao", True, latency_ms=2_000
+        )
+    async with client_for(
+        Official(), [record(source)], audio, gequbao=gequbao
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert source.resolved == ["song"]
+    assert gequbao.asked == []
+
+
 async def test_all_strict_listen_providers_are_reported_as_t4(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -860,7 +973,8 @@ async def test_all_strict_listen_providers_are_reported_as_t4(
 
     assert response.status_code == 200
     assert [(event.tier, event.source_platform) for event in events] == [
-        ("T4", "gequbao")
+        ("T1", "netease"),
+        ("T4", "gequbao"),
     ]
 
 
@@ -872,7 +986,7 @@ class FuzzyOnlyClips:
     async def iter_preview_clips(self, track: TrackRef, *, match=None, **_kwargs):
         self.asked.append(track)
         self.matches.append(match)
-        if match is None:
+        if match is not is_fuzzy_listen_match:
             return
             yield
         yield PreviewClip(
@@ -899,5 +1013,76 @@ async def test_fuzzy_clip_plays_after_the_strict_listen_ladder_misses() -> None:
         response = await client.get(ENDPOINT, params=PARAMS)
     assert response.status_code == 200
     assert response.content == GEQUBAO_BODY
-    assert fuzzy.matches == [None, is_fuzzy_preview_match]
+    assert fuzzy.matches == [is_listen_match, is_fuzzy_listen_match]
+
+
+async def test_official_preview_miss_is_recorded_as_t1_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[preview_telemetry.PreviewEvent] = []
+
+    async def record_event(event: preview_telemetry.PreviewEvent, **_: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(preview, "publish", record_event)
+    async with client_for(Official(fails=True), [record(Source("backup"))], audio) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+
+    assert response.status_code == 200
+    t1 = events[0]
+    assert (t1.tier, t1.status, t1.error) == ("T1", "error", "ReadTimeout")
+    assert t1.source_platform == TRACK.platform
+    assert t1.latency_ms is not None
+    assert t1.latency_ms < 1_000
+    assert any(event.tier == "T3" and event.status == "ok" for event in events)
+
+
+async def test_access_limited_download_source_is_skipped_on_the_next_click() -> None:
+    limited, backup = Source("limited", access_limited=True), Source("backup")
+    async with client_for(
+        Official(),
+        [record(limited, priority=10), record(backup)],
+        audio,
+    ) as client:
+        first = await client.get(ENDPOINT, params=PARAMS)
+        second = await client.get(ENDPOINT, params=PARAMS)
+    assert first.status_code == second.status_code == 200
+    assert limited.searched == [TRACK]
+    assert backup.searched == [TRACK, TRACK]
+
+
+async def test_access_limited_resolve_trips_the_same_breaker() -> None:
+    class ResolveLimited(Source):
+        async def resolve(
+            self, item: DownloadCandidate, *, offset: int = 0
+        ) -> DownloadResponse:
+            self.resolved.append(item.source_track_id)
+            raise DownloadSourceAccessLimited("download source access limited")
+
+    limited, backup = ResolveLimited("limited"), Source("backup")
+    async with client_for(
+        Official(),
+        [record(limited, priority=10), record(backup)],
+        audio,
+    ) as client:
+        first = await client.get(ENDPOINT, params=PARAMS)
+        second = await client.get(ENDPOINT, params=PARAMS)
+    assert first.status_code == second.status_code == 200
+    assert limited.searched == [TRACK]
+    assert limited.resolved == ["song"]
+    assert backup.searched == [TRACK, TRACK]
+
+
+async def test_a_plain_search_failure_does_not_trip_the_quota_breaker() -> None:
+    broken, backup = Source("broken", search_fails=True), Source("backup")
+    async with client_for(
+        Official(),
+        [record(broken, priority=10), record(backup)],
+        audio,
+    ) as client:
+        first = await client.get(ENDPOINT, params=PARAMS)
+        second = await client.get(ENDPOINT, params=PARAMS)
+    assert first.status_code == second.status_code == 200
+    assert broken.searched == [TRACK, TRACK]
+    assert backup.searched == [TRACK, TRACK]
 

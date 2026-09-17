@@ -7,6 +7,10 @@ import httpx
 from app.domain.models import DownloadCandidate, DownloadResponse, TrackRef
 
 
+class DownloadSourceAccessLimited(Exception):
+    """The source answered, but further detail pages are quota / login gated."""
+
+
 class DownloadSourcePort(Protocol):
     async def search(self, track: TrackRef) -> list[DownloadCandidate]:
         ...

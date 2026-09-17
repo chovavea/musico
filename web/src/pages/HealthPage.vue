@@ -5,6 +5,7 @@ import AppIcon from "../components/AppIcon.vue";
 import PageHeader from "../components/PageHeader.vue";
 import { platformLabel } from "../lib/boards";
 import { formatUpdatedAt } from "../lib/format";
+import { downloadErrorLabel } from "../lib/status-labels";
 import { useHealthStore } from "../stores/health";
 
 const healthStore = useHealthStore();
@@ -13,6 +14,7 @@ const { payload, error, loading, lastRefreshedAt } = storeToRefs(healthStore);
 // 下载兜底目前只读展示：它记录下载失败与兜底跳转结果，但不参与 healthScore。
 // TODO(health-score): 后续把兜底当成一个“源”纳入评分（见 ../lib/healthScore.ts）。
 const fallback = computed(() => payload.value?.fallback ?? null);
+const downloadSources = computed(() => payload.value?.download_sources ?? []);
 const fallbackSuccessCount = computed(
   () => fallback.value?.counts["fallback_request:jumped"] ?? 0,
 );
@@ -99,8 +101,11 @@ onMounted(async () => {
         <div class="mt-1 text-xl">{{ payload?.sources.length ?? 0 }}</div>
       </article>
       <article class="rounded-2xl bg-white p-4 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-white/10">
-        <div class="text-xs text-secondary">过期阈值</div>
-        <div class="mt-1 text-xl">{{ payload?.staleness_multiplier ?? "-" }}</div>
+        <div class="text-xs text-secondary">下载源</div>
+        <div class="mt-1 text-xl">{{ downloadSources.length }}</div>
+        <div class="mt-1 truncate text-xs text-secondary">
+          {{ downloadSources.length ? downloadSources.map((item) => item.name).join("、") : "未加载" }}
+        </div>
       </article>
     </div>
 
@@ -208,7 +213,7 @@ onMounted(async () => {
               <span v-if="event.artist" class="text-secondary">· {{ event.artist }}</span>
             </div>
             <div class="mt-0.5 truncate text-xs text-secondary">
-              {{ event.detail || event.trigger }}
+              {{ downloadErrorLabel(event.detail) || event.detail || event.trigger }}
             </div>
           </div>
           <div class="shrink-0 text-right">

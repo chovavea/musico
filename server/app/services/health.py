@@ -34,6 +34,7 @@ async def build_health(
     settings: Settings,
     *,
     fallback: dict[str, Any] | None = None,
+    download_sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     enabled = [spec for spec in specs if spec.enabled]
     async with session_factory() as session:
@@ -79,4 +80,5 @@ async def build_health(
         # TODO(health-score): once the fallback has a meaningful success rate,
         # score it as one more "source" (see web/src/lib/healthScore.ts).
         "fallback": fallback,
+        "download_sources": download_sources or [],
     }

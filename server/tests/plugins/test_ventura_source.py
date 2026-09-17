@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 from app.domain.models import AudioQuality, DownloadCandidate, TrackRef
+from app.download_sources.protocol import DownloadSourceAccessLimited
 from app.download_sources.registry import load_download_sources
 from app.download_sources.source_ventura.source import VenturaSource
 
@@ -107,7 +108,8 @@ async def test_ventura_source_reports_the_daily_quota_page_instead_of_crashing()
             url_guard=_offline_guard,
         )
         track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
-        assert await source.search(track) == []
+        with pytest.raises(DownloadSourceAccessLimited, match="access limited"):
+            await source.search(track)
         candidate = DownloadCandidate(
             source_id="ventura",
             source_track_id="https://mirror.example/music/a/sky",
@@ -116,7 +118,7 @@ async def test_ventura_source_reports_the_daily_quota_page_instead_of_crashing()
             quality=AudioQuality(format="flac"),
             locator={"detail_url": "https://mirror.example/music/a/sky"},
         )
-        with pytest.raises(ValueError, match="no direct download link"):
+        with pytest.raises(DownloadSourceAccessLimited, match="access limited"):
             await source.resolve(candidate)
     finally:
         await client.aclose()

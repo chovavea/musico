@@ -375,6 +375,13 @@ def build_router() -> APIRouter:
     @router.get("/health")
     async def health(request: Request) -> Any:
         settings = request.app.state.settings
+        registry = getattr(request.app.state, "download_sources", None)
+        download_sources = []
+        names = getattr(registry, "names", None)
+        if callable(names):
+            download_sources = [
+                {"id": source_id, "name": name} for source_id, name in names().items()
+            ]
         data = await build_health(
             request.app.state.session_factory,
             request.app.state.board_specs,
@@ -382,6 +389,7 @@ def build_router() -> APIRouter:
             fallback=await request.app.state.fallback_service.health(
                 settings.fallback_event_limit
             ),
+            download_sources=download_sources,
         )
         return ok(data)
 

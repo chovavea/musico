@@ -11,7 +11,9 @@ import pytest
 from app.adapters.download_worker import DownloadWorker, _headers_for_cross_origin_redirect
 from app.adapters.persistence.models import DownloadTaskRow
 from app.domain.models import AudioQuality, DownloadCandidate, DownloadResponse, TrackRef
+from app.download_sources.protocol import DownloadSourceAccessLimited
 from app.download_sources.registry import DownloadSourceRecord, DownloadSourceRegistry
+from app.services.preview_telemetry import reset_preview_telemetry
 from app.settings import Settings
 
 
@@ -71,6 +73,11 @@ class _Session:
         return None
 
 
+@pytest.fixture(autouse=True)
+def _reset_download_source_circuit() -> None:
+    reset_preview_telemetry()
+
+
 @pytest.mark.asyncio
 async def test_candidate_search_uses_configured_source_priority_order() -> None:
     calls: list[str] = []
@@ -109,6 +116,75 @@ async def test_candidate_search_uses_configured_source_priority_order() -> None:
     await worker._client.aclose()
     assert selected == []
     assert calls == ["high", "low"]
+
+
+class _LimitedSource:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def search(self, _track: TrackRef) -> list[DownloadCandidate]:
+        self.calls += 1
+        raise DownloadSourceAccessLimited("download source access limited")
+
+    async def resolve(self, _candidate: DownloadCandidate, *, offset: int = 0) -> DownloadResponse:
+        raise AssertionError("resolve should not run")
+
+
+@pytest.mark.asyncio
+async def test_candidate_pool_surfaces_access_limited_when_no_other_source_matches() -> None:
+    registry = DownloadSourceRegistry(
+        sources={
+            "ventura": DownloadSourceRecord(
+                source_id="ventura",
+                name="ventura",
+                priority=100,
+                hosts=("media.example",),
+                config_schema={},
+                source=_LimitedSource(),
+            )
+        }
+    )
+    settings = Settings(boards_yaml=Path("configs/boards.yaml"))
+    worker = DownloadWorker(
+        SimpleNamespace(), httpx.AsyncClient(), registry, settings, url_guard=_allow_all_urls
+    )
+    with pytest.raises(DownloadSourceAccessLimited, match="access limited"):
+        await worker._candidate_pool(
+            _Session(),
+            _Repo(),
+            DownloadTaskRow(id="task", library_track_id="track", status="downloading"),
+            TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦"),
+        )
+    await worker._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_pool_does_not_research_a_source_after_quota() -> None:
+    source = _LimitedSource()
+    registry = DownloadSourceRegistry(
+        sources={
+            "ventura": DownloadSourceRecord(
+                source_id="ventura",
+                name="ventura",
+                priority=100,
+                hosts=("media.example",),
+                config_schema={},
+                source=source,
+            )
+        }
+    )
+    settings = Settings(boards_yaml=Path("configs/boards.yaml"))
+    worker = DownloadWorker(
+        SimpleNamespace(), httpx.AsyncClient(), registry, settings, url_guard=_allow_all_urls
+    )
+    track = TrackRef(platform="qqmusic", external_id="1", title="晴天", artist="周杰伦")
+    task = DownloadTaskRow(id="task", library_track_id="track", status="downloading")
+    with pytest.raises(DownloadSourceAccessLimited, match="access limited"):
+        await worker._candidate_pool(_Session(), _Repo(), task, track)
+    with pytest.raises(DownloadSourceAccessLimited, match="access limited"):
+        await worker._candidate_pool(_Session(), _Repo(), task, track)
+    await worker._client.aclose()
+    assert source.calls == 1
 
 
 @pytest.mark.asyncio

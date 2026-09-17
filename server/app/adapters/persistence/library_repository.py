@@ -365,6 +365,20 @@ class LibraryRepository:
         await self._record_download_failure(task, error)
         return True
 
+    async def fail_waiting_tasks(self, error: str, *, exclude_id: str | None = None) -> int:
+        """Fail queued work once a source has hit a global access cap."""
+        query = select(DownloadTaskRow).where(
+            DownloadTaskRow.status.in_(["resolving", "queued", "retrying"])
+        )
+        if exclude_id:
+            query = query.where(DownloadTaskRow.id != exclude_id)
+        rows = (await self._session.execute(query)).scalars().all()
+        count = 0
+        for waiting in rows:
+            if await self.mark_failed(waiting, error):
+                count += 1
+        return count
+
     async def _record_download_failure(self, task: DownloadTaskRow, error: str) -> None:
         """Mirror a terminal download failure into the fallback trail.
 

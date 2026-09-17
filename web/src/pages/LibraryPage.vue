@@ -110,7 +110,7 @@ onMounted(async () => {
       >
         <div class="min-w-0 flex-1">
           <div class="truncate font-medium">{{ asset.title }}</div>
-          <div class="truncate text-sm text-secondary">
+          <div class="truncate text-sm text-artist">
             {{ asset.artist }} · {{ asset.format.toUpperCase() }}
             <span v-if="asset.bit_depth"> · {{ asset.bit_depth }}bit</span>
             <span v-if="asset.sample_rate_hz"> · {{ asset.sample_rate_hz / 1000 }}kHz</span>

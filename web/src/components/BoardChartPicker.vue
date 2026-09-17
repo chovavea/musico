@@ -13,10 +13,8 @@ const emit = defineEmits<{
   reorder: [key: string, beforeKey: string | null];
 }>();
 
-/** Apple HIG: drag image after ~3pt. dnd-kit: mouse 5px, touch 200–250ms delay. */
+/** Mouse: 5px to lift (whole row). Touch: drag only from the handle, follow immediately. */
 const MOUSE_DISTANCE = 5;
-const TOUCH_DELAY_MS = 220;
-const TOUCH_TOLERANCE = 10;
 
 const open = ref(false);
 const query = ref("");
@@ -31,8 +29,11 @@ const insertAt = ref(-1);
 const lifted = ref(false);
 const moved = ref(false);
 const ignoreClickUntil = ref(0);
+const pressingKey = ref("");
 const rowHeight = ref(44);
-const ghost = ref({ top: 0, left: 0, width: 0, name: "", selected: false });
+const ghostEl = ref<HTMLElement | null>(null);
+const ghost = ref({ left: 0, width: 0, name: "", selected: false });
+const coarsePointer = ref(false);
 /** 乐观提交：拖放后到接口返回前，列表以该顺序展示。 */
 const localKeys = ref<string[] | null>(null);
 const saving = ref(false);
@@ -40,12 +41,18 @@ const saving = ref(false);
 let pending: {
   key: string;
   pointerId: number;
+  identifier: number;
   startX: number;
   startY: number;
+  lastX: number;
+  lastY: number;
   grabY: number;
   isTouch: boolean;
-  timer: number;
+  claimed: boolean;
+  row: HTMLElement;
 } | null = null;
+let dragRaf = 0;
+let ghostY = 0;
 
 const canDrag = computed(() => !query.value.trim() && !saving.value);
 
@@ -103,19 +110,42 @@ const activeChart = computed(
     null,
 );
 
-type DisplayRow = { type: "ph" } | { type: "chart"; chart: CatalogChart };
+function listRect(): DOMRect | null {
+  return listEl.value?.getBoundingClientRect() ?? null;
+}
 
-const displayRows = computed<DisplayRow[]>(() => {
-  if (!lifted.value || !draggingKey.value) {
-    return visibleCharts.value.map((chart) => ({ type: "chart", chart }));
+function clampInsertY(clientY: number): number {
+  const box = listRect();
+  if (!box) return clientY;
+  return Math.max(box.top + 1, Math.min(box.bottom - 1, clientY));
+}
+
+function clampGhostTop(y: number): number {
+  const box = listRect();
+  if (!box) return y;
+  return Math.max(box.top, Math.min(box.bottom - rowHeight.value, y));
+}
+
+function rowDragStyle(chart: CatalogChart): Record<string, string> | undefined {
+  if (!lifted.value || !draggingKey.value) return undefined;
+  const charts = visibleCharts.value;
+  const from = charts.findIndex((item) => item.key === draggingKey.value);
+  const i = charts.findIndex((item) => item.key === chart.key);
+  if (from < 0 || i < 0) return undefined;
+  const to = Math.max(0, Math.min(insertAt.value, charts.length - 1));
+  const h = rowHeight.value;
+  const style: Record<string, string> = {};
+  if (i === from) {
+    style.opacity = "0";
+    style.pointerEvents = "none";
   }
-  const rows: DisplayRow[] = visibleCharts.value
-    .filter((chart) => chart.key !== draggingKey.value)
-    .map((chart) => ({ type: "chart", chart }));
-  const idx = Math.max(0, Math.min(insertAt.value, rows.length));
-  rows.splice(idx, 0, { type: "ph" });
-  return rows;
-});
+  let y = 0;
+  if (i === from) y = (to - from) * h;
+  else if (from < to && i > from && i <= to) y = -h;
+  else if (from > to && i >= to && i < from) y = h;
+  if (y) style.transform = `translate3d(0, ${y}px, 0)`;
+  return Object.keys(style).length ? style : undefined;
+}
 
 function onDocClick(event: MouseEvent) {
   if (lifted.value || Date.now() < ignoreClickUntil.value) return;
@@ -150,20 +180,21 @@ async function openPicker(focus: "search" | "first" | "last" | "current" = "sear
   open.value = true;
   activeKey.value = preferredKey(focus === "search" ? "current" : focus);
   await nextTick();
-  if (focus === "search") {
-    searchEl.value?.focus();
-  } else {
+  if (focus === "search" && !coarsePointer.value) {
+    searchEl.value && focusQuiet(searchEl.value);
+  } else if (focus !== "search") {
     await focusOption(activeKey.value);
   }
 }
 
-async function closePicker(restoreTrigger = false) {
+async function closePicker(restoreTrigger = false, keyboard = false) {
+  cancelDrag();
   open.value = false;
   query.value = "";
   activeKey.value = "";
   if (restoreTrigger) {
     await nextTick();
-    triggerEl.value?.focus();
+    focusQuiet(triggerEl.value);
   }
 }
 
@@ -184,7 +215,7 @@ function onTriggerKeydown(event: KeyboardEvent) {
     void openPicker("last");
   } else if (event.key === "Escape" && open.value) {
     event.preventDefault();
-    void closePicker(true);
+    void closePicker(true, true);
   }
 }
 
@@ -202,18 +233,22 @@ function onPopupKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
   event.preventDefault();
   event.stopPropagation();
-  void closePicker(true);
+  void closePicker(true, true);
 }
 
-function choose(key: string, playable: boolean) {
+function choose(key: string, playable: boolean, keyboard = false) {
   if (!playable) return;
   if (lifted.value || moved.value || Date.now() < ignoreClickUntil.value) return;
   emit("select", key);
-  void closePicker(true);
+  void closePicker(true, keyboard);
 }
 
 function isCurrent(key: string): boolean {
   return key === props.chartKey;
+}
+
+function onOptionFocus(chart: CatalogChart) {
+  activeKey.value = chart.key;
 }
 
 function optionTabindex(chart: CatalogChart): 0 | -1 {
@@ -246,7 +281,7 @@ function onOptionKeydown(chart: CatalogChart, event: KeyboardEvent) {
     nextKey = charts[charts.length - 1].key;
   } else if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    choose(chart.key, chart.playable);
+    choose(chart.key, chart.playable, true);
     return;
   } else {
     return;
@@ -255,126 +290,154 @@ function onOptionKeydown(chart: CatalogChart, event: KeyboardEvent) {
   void focusOption(nextKey);
 }
 
-function layoutTop(el: HTMLElement): number {
-  const transform = getComputedStyle(el).transform;
-  let shift = 0;
-  if (transform && transform !== "none") {
-    try {
-      shift = new DOMMatrixReadOnly(transform).m42;
-    } catch {
-      shift = 0;
-    }
-  }
-  return el.getBoundingClientRect().top - shift;
-}
-
 function insertIndexFromY(clientY: number): number {
   if (!listEl.value) return 0;
-  const others = [...listEl.value.querySelectorAll<HTMLElement>("[data-chart-key]")];
+  const y = clampInsertY(clientY);
+  const others = [...listEl.value.querySelectorAll<HTMLElement>("[data-chart-key]")].filter(
+    (el) => el.dataset.chartKey !== draggingKey.value,
+  );
   for (let i = 0; i < others.length; i += 1) {
-    const top = layoutTop(others[i]);
-    if (clientY < top + rowHeight.value / 2) return i;
+    const rect = others[i].getBoundingClientRect();
+    if (y < rect.top + rect.height / 2) return i;
   }
   return others.length;
+}
+
+function focusQuiet(el: HTMLElement | null) {
+  if (!el) return;
+  try {
+    el.focus({ preventScroll: true });
+  } catch {
+    el.focus();
+  }
+}
+
+function preventIfPossible(event: Event) {
+  if (event.cancelable) event.preventDefault();
+}
+
+function paintGhost(y: number) {
+  ghostY = clampGhostTop(y);
+  const el = ghostEl.value;
+  if (el) el.style.transform = `translate3d(0, ${ghostY}px, 0) scale(1.03)`;
 }
 
 function autoScroll(clientY: number) {
   const box = listEl.value;
   if (!box) return;
   const rect = box.getBoundingClientRect();
-  if (clientY < rect.top + 36) box.scrollTop -= 14;
-  if (clientY > rect.bottom - 36) box.scrollTop += 14;
+  const edge = 48;
+  if (clientY < rect.top + edge) box.scrollTop -= Math.max(8, (rect.top + edge - clientY) / 3);
+  if (clientY > rect.bottom - edge) box.scrollTop += Math.max(8, (clientY - (rect.bottom - edge)) / 3);
 }
 
-function bindWindow() {
+function bindPointerWindow() {
   window.addEventListener("pointermove", onWindowMove, { passive: false, capture: true });
   window.addEventListener("pointerup", onWindowUp, { capture: true });
   window.addEventListener("pointercancel", onWindowUp, { capture: true });
 }
 
-function unbindWindow() {
+function unbindPointerWindow() {
   window.removeEventListener("pointermove", onWindowMove, true);
   window.removeEventListener("pointerup", onWindowUp, true);
   window.removeEventListener("pointercancel", onWindowUp, true);
 }
 
+function onHandleTouchStart(event: TouchEvent) {
+  if (!open.value || !canDrag.value || event.touches.length !== 1) return;
+  const handle = (event.target as HTMLElement).closest<HTMLElement>("[data-drag-handle]");
+  if (!handle || !root.value?.contains(handle)) return;
+  const row = handle.closest<HTMLElement>("[data-option-key]");
+  if (!row) return;
+  const chart = visibleCharts.value.find((item) => item.key === row.dataset.optionKey);
+  if (!chart?.playable) return;
+  const touch = event.touches[0];
+  preventIfPossible(event);
+  if (pending) {
+    pending.identifier = touch.identifier;
+    return;
+  }
+  beginPending(chart, row, touch.clientX, touch.clientY, true, -1, touch.identifier);
+  if (pending) pending.row = handle;
+}
+
+function bindTouchWindow() {
+  window.addEventListener("touchstart", onHandleTouchStart, { passive: false, capture: true });
+  window.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
+  window.addEventListener("touchend", onTouchEnd, { capture: true });
+  window.addEventListener("touchcancel", onTouchCancel, { capture: true });
+}
+
+function unbindTouchWindow() {
+  window.removeEventListener("touchstart", onHandleTouchStart, true);
+  window.removeEventListener("touchmove", onTouchMove, true);
+  window.removeEventListener("touchend", onTouchEnd, true);
+  window.removeEventListener("touchcancel", onTouchCancel, true);
+}
+
+function capturePointer(el: HTMLElement, pointerId: number) {
+  try {
+    el.setPointerCapture(pointerId);
+  } catch {
+    /* pointer already gone */
+  }
+}
+
+function releasePointer(el: HTMLElement | null, pointerId: number) {
+  if (!el || pointerId < 0) return;
+  try {
+    if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+  } catch {
+    /* ignore */
+  }
+}
+
 function activateLift(chart: CatalogChart, clientY: number) {
   if (!pending) return;
+  pending.claimed = true;
   lifted.value = true;
+  pressingKey.value = chart.key;
   draggingKey.value = chart.key;
   insertAt.value = visibleCharts.value.findIndex((item) => item.key === chart.key);
   moved.value = false;
-  ghost.value = {
-    ...ghost.value,
-    top: clientY - pending.grabY,
-    name: chart.name,
-    selected: isCurrent(chart.key),
-  };
+  paintGhost(clientY - pending.grabY);
+  void nextTick(() => paintGhost(clientY - pending.grabY));
   try {
     navigator.vibrate?.(12);
   } catch {
     /* ignore */
   }
-  if (listEl.value) listEl.value.classList.add("touch-none");
 }
 
-function onRowDown(chart: CatalogChart, event: PointerEvent) {
-  if (!canDrag.value || !chart.playable) return;
-  if ((event.target as HTMLElement).closest("input, [data-no-drag]")) return;
-  const row = event.currentTarget as HTMLElement;
-  const rect = row.getBoundingClientRect();
-  rowHeight.value = rect.height;
-  pending = {
-    key: chart.key,
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    grabY: event.clientY - rect.top,
-    isTouch: event.pointerType === "touch",
-    timer: 0,
-  };
-  ghost.value = {
-    top: rect.top,
-    left: rect.left,
-    width: rect.width,
-    name: chart.name,
-    selected: isCurrent(chart.key),
-  };
-  bindWindow();
-  if (pending.isTouch) {
-    pending.timer = window.setTimeout(() => {
-      if (!pending || pending.key !== chart.key) return;
-      activateLift(chart, pending.startY);
-    }, TOUCH_DELAY_MS);
+function cancelDrag() {
+  if (dragRaf) {
+    cancelAnimationFrame(dragRaf);
+    dragRaf = 0;
   }
+  if (pending) releasePointer(pending.row, pending.pointerId);
+  unbindPointerWindow();
+  pending = null;
+  pressingKey.value = "";
+  lifted.value = false;
+  draggingKey.value = "";
+  insertAt.value = -1;
+  moved.value = false;
 }
 
-function onWindowMove(event: PointerEvent) {
-  if (!pending || event.pointerId !== pending.pointerId) return;
-  const dx = event.clientX - pending.startX;
-  const dy = event.clientY - pending.startY;
-  const dist = Math.hypot(dx, dy);
+function applyDrag(clientX: number, clientY: number) {
+  if (!pending || !lifted.value) return;
+  pending.lastX = clientX;
+  pending.lastY = clientY;
+  if (!dragRaf) dragRaf = requestAnimationFrame(flushDrag);
+}
 
-  if (!lifted.value) {
-    if (pending.isTouch) {
-      if (dist > TOUCH_TOLERANCE) {
-        window.clearTimeout(pending.timer);
-        unbindWindow();
-        pending = null;
-      }
-      return;
-    }
-    if (dist >= MOUSE_DISTANCE) {
-      const chart = visibleCharts.value.find((item) => item.key === pending?.key);
-      if (chart) activateLift(chart, event.clientY);
-    }
-    return;
-  }
-
-  event.preventDefault();
-  ghost.value = { ...ghost.value, top: event.clientY - pending.grabY };
-  autoScroll(event.clientY);
-  const next = insertIndexFromY(event.clientY);
+function flushDrag() {
+  dragRaf = 0;
+  if (!pending || !lifted.value) return;
+  paintGhost(pending.lastY - pending.grabY);
+  autoScroll(clampInsertY(pending.lastY));
+  const next = insertIndexFromY(pending.lastY);
+  const dy = pending.lastY - pending.startY;
   if (next !== insertAt.value) {
     insertAt.value = next;
     moved.value = true;
@@ -383,20 +446,161 @@ function onWindowMove(event: PointerEvent) {
   }
 }
 
+function beginPending(
+  chart: CatalogChart,
+  row: HTMLElement,
+  clientX: number,
+  clientY: number,
+  isTouch: boolean,
+  pointerId: number,
+  identifier: number,
+) {
+  if (pending || lifted.value) cancelDrag();
+  const rect = row.getBoundingClientRect();
+  rowHeight.value = rect.height;
+  pending = {
+    key: chart.key,
+    pointerId,
+    identifier,
+    startX: clientX,
+    startY: clientY,
+    lastX: clientX,
+    lastY: clientY,
+    grabY: clientY - rect.top,
+    isTouch,
+    claimed: false,
+    row,
+  };
+  const box = listRect();
+  ghost.value = {
+    left: box ? box.left + 4 : rect.left,
+    width: box ? box.width - 8 : rect.width,
+    name: chart.name,
+    selected: isCurrent(chart.key),
+  };
+  paintGhost(rect.top);
+}
+
+function onRowDown(chart: CatalogChart, event: PointerEvent) {
+  const isTouch = event.pointerType === "touch" || event.pointerType === "pen";
+  if (isTouch && !(event.target as HTMLElement).closest("[data-drag-handle]")) return;
+  if (!canDrag.value || !chart.playable) return;
+  if ((event.target as HTMLElement).closest("input, [data-no-drag]")) return;
+  const row = event.currentTarget as HTMLElement;
+  const handle = (event.target as HTMLElement).closest<HTMLElement>("[data-drag-handle]");
+  const captureEl = isTouch && handle ? handle : row;
+  if (pending && pending.key === chart.key && pending.isTouch && isTouch) {
+    pending.pointerId = event.pointerId;
+    pending.row = captureEl;
+    capturePointer(captureEl, event.pointerId);
+    bindPointerWindow();
+    preventIfPossible(event);
+    return;
+  }
+  beginPending(chart, row, event.clientX, event.clientY, isTouch, event.pointerId, pending?.identifier ?? -1);
+  if (pending) pending.row = captureEl;
+  capturePointer(captureEl, event.pointerId);
+  bindPointerWindow();
+  if (isTouch) preventIfPossible(event);
+}
+
+function onWindowMove(event: PointerEvent) {
+  if (!pending || event.pointerId !== pending.pointerId) return;
+  const dist = Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY);
+  if (!lifted.value) {
+    if (dist < MOUSE_DISTANCE) return;
+    const chart = visibleCharts.value.find((item) => item.key === pending?.key);
+    if (chart) activateLift(chart, event.clientY);
+    return;
+  }
+  preventIfPossible(event);
+  applyDrag(event.clientX, event.clientY);
+}
+
+function matchingTouch(event: TouchEvent): Touch | undefined {
+  if (!pending) return undefined;
+  const points = event.touches.length ? event.touches : event.changedTouches;
+  if (pending.identifier >= 0) {
+    return [...points].find((touch) => touch.identifier === pending?.identifier);
+  }
+  return points[0];
+}
+
+function onTouchMove(event: TouchEvent) {
+  if (!pending?.isTouch) return;
+  const touch = matchingTouch(event) ?? event.touches[0];
+  if (!touch) return;
+  if (!lifted.value && pending.isTouch) {
+    const dist = Math.hypot(touch.clientX - pending.startX, touch.clientY - pending.startY);
+    if (dist >= MOUSE_DISTANCE) {
+      const chart = visibleCharts.value.find((item) => item.key === pending?.key);
+      if (chart) activateLift(chart, touch.clientY);
+    } else {
+      preventIfPossible(event);
+      return;
+    }
+  }
+  if (!lifted.value) return;
+  pending.claimed = true;
+  preventIfPossible(event);
+  applyDrag(touch.clientX, touch.clientY);
+}
+
+function onTouchEnd(event: TouchEvent) {
+  if (!pending?.isTouch) return;
+  const touch = matchingTouch(event);
+  if (touch) {
+    pending.lastX = touch.clientX;
+    pending.lastY = touch.clientY;
+  }
+  if (!lifted.value) {
+    cancelDrag();
+    return;
+  }
+  finishDrag();
+}
+
+function onTouchCancel() {
+  if (!pending?.isTouch) return;
+  // Safari often cancels right after lift, before the first move frame.
+  // Keep the gesture and drop on touchend/pointerup.
+  if (lifted.value) return;
+  cancelDrag();
+}
+
 function onWindowUp(event: PointerEvent) {
   if (!pending || event.pointerId !== pending.pointerId) return;
-  window.clearTimeout(pending.timer);
-  unbindWindow();
-  listEl.value?.classList.remove("touch-none");
+  pending.lastX = event.clientX;
+  pending.lastY = event.clientY;
+  if (event.type === "pointercancel") {
+    if (lifted.value) return;
+    cancelDrag();
+    return;
+  }
+  if (!lifted.value) {
+    cancelDrag();
+    return;
+  }
+  finishDrag();
+}
+
+function finishDrag() {
+  if (!pending) return;
+  if (lifted.value) {
+    const next = insertIndexFromY(pending.lastY);
+    insertAt.value = next;
+    if (next !== visibleCharts.value.findIndex((item) => item.key === pending?.key)) {
+      moved.value = true;
+    } else if (Math.abs(pending.lastY - pending.startY) > MOUSE_DISTANCE) {
+      moved.value = true;
+    }
+  }
   const key = draggingKey.value;
   const index = insertAt.value;
   const didLift = lifted.value;
-  const didMove = moved.value;
-  pending = null;
-  lifted.value = false;
-  draggingKey.value = "";
-  insertAt.value = -1;
-  moved.value = false;
+  const origin = visibleCharts.value.findIndex((item) => item.key === key);
+  const didMove = didLift && index >= 0 && index !== origin;
+  cancelDrag();
   if (!didLift) return;
   ignoreClickUntil.value = Date.now() + 400;
   if (!didMove || index < 0 || !key) return;
@@ -457,11 +661,34 @@ watch(query, () => {
   }
 });
 
-onMounted(() => document.addEventListener("click", onDocClick));
+let bindGen = 0;
+
+onMounted(() => {
+  coarsePointer.value =
+    window.matchMedia("(pointer: coarse)").matches ||
+    /iPhone|iPod|iPad/i.test(navigator.userAgent) ||
+    (navigator.maxTouchPoints > 0 && window.matchMedia("(hover: none)").matches);
+  document.addEventListener("click", onDocClick);
+});
 onUnmounted(() => {
+  bindGen += 1;
   document.removeEventListener("click", onDocClick);
-  unbindWindow();
-  if (pending) window.clearTimeout(pending.timer);
+  unbindTouchWindow();
+  cancelDrag();
+});
+
+watch(open, async (isOpen) => {
+  bindGen += 1;
+  const gen = bindGen;
+  if (!isOpen) {
+    unbindTouchWindow();
+    cancelDrag();
+    return;
+  }
+  await nextTick();
+  if (gen !== bindGen || !open.value) return;
+  // Bind before the gesture so Safari treats touchmove as cancelable (WebKit 184250).
+  bindTouchWindow();
 });
 </script>
 
@@ -470,7 +697,7 @@ onUnmounted(() => {
     <button
       ref="triggerEl"
       type="button"
-      class="inline-flex min-h-11 max-w-full items-center gap-1 rounded-full px-1 text-left text-lg font-semibold hover:bg-zinc-100 dark:hover:bg-white/10"
+      class="chart-title-trigger inline-flex min-h-11 max-w-full items-center gap-1 rounded-full px-1 text-left text-[1.05rem] font-bold tracking-[0.01em] hover:bg-zinc-100 dark:hover:bg-white/10"
       :aria-expanded="open"
       :aria-controls="listboxId"
       aria-haspopup="listbox"
@@ -500,7 +727,7 @@ onUnmounted(() => {
           placeholder="搜索榜单"
           aria-label="搜索榜单"
           :aria-controls="listboxId"
-          class="h-11 w-full rounded-full bg-zinc-100 px-3 text-sm outline-none dark:bg-zinc-800"
+          class="chart-picker-search h-11 w-full appearance-none rounded-full bg-zinc-100 px-3 text-[16px] outline-none ring-1 ring-transparent transition focus:bg-white focus:ring-zinc-300 dark:bg-zinc-800 dark:focus:bg-zinc-800 dark:focus:ring-white/20"
           @keydown="onSearchKeydown"
         />
       </div>
@@ -510,58 +737,60 @@ onUnmounted(() => {
         role="listbox"
         aria-label="榜单"
         :aria-busy="saving"
-        class="max-h-80 overflow-y-auto px-1 py-1"
-        :class="lifted ? 'select-none' : ''"
+        class="chart-picker-list max-h-[min(70dvh,28rem)] overflow-y-auto overscroll-contain px-1 py-1"
+        :class="lifted ? 'select-none touch-none' : ''"
       >
-        <TransitionGroup name="chart-sort" tag="div">
+        <TransitionGroup name="chart-sort" :css="!lifted" tag="div">
           <div
-            v-for="row in displayRows"
-            :key="row.type === 'ph' ? 'ph' : row.chart.key"
-            class="group flex min-h-11 items-center rounded-xl text-sm"
-            :data-chart-key="row.type === 'chart' ? row.chart.key : undefined"
-            :class="
-              row.type === 'ph'
-                ? 'bg-zinc-100 dark:bg-white/10'
-                : [
-                    'chart-sort-row',
-                    isCurrent(row.chart.key)
-                      ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
-                      : 'hover:bg-zinc-100 dark:hover:bg-white/10',
-                    canDrag && row.chart.playable ? 'cursor-grab' : '',
-                    lifted ? 'cursor-grabbing' : '',
-                    !row.chart.playable ? 'cursor-not-allowed text-zinc-400' : '',
-                  ]
-            "
-            :style="row.type === 'ph' ? { height: `${rowHeight}px` } : undefined"
-            @pointerdown="row.type === 'chart' && onRowDown(row.chart, $event)"
+            v-for="chart in visibleCharts"
+            :key="chart.key"
+            class="group flex min-h-11 items-center rounded-xl text-sm chart-sort-row outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
+            :data-chart-key="chart.key"
+            :data-option-key="chart.key"
+            role="option"
+            :aria-selected="isCurrent(chart.key)"
+            :aria-disabled="!chart.playable"
+            aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+            :tabindex="optionTabindex(chart)"
+            :class="[
+              isCurrent(chart.key)
+                ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
+                : 'hover:bg-zinc-100 dark:hover:bg-white/10',
+              canDrag && chart.playable ? 'cursor-grab' : '',
+              lifted ? 'cursor-grabbing' : '',
+              draggingKey === chart.key ? 'is-drag-source' : '',
+              !chart.playable ? 'cursor-not-allowed text-zinc-400' : '',
+            ]"
+            :style="rowDragStyle(chart)"
+            @pointerdown="onRowDown(chart, $event)"
+            @click="choose(chart.key, chart.playable)"
+            @focus="onOptionFocus(chart)"
+            @keydown="onOptionKeydown(chart, $event)"
+            @contextmenu.prevent
           >
-            <template v-if="row.type === 'chart'">
-              <button
-                type="button"
-                role="option"
-                class="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-xl px-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
-                :data-option-key="row.chart.key"
-                :aria-selected="isCurrent(row.chart.key)"
-                :aria-disabled="!row.chart.playable"
-                aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                :tabindex="optionTabindex(row.chart)"
-                @focus="activeKey = row.chart.key"
-                @click="choose(row.chart.key, row.chart.playable)"
-                @keydown="onOptionKeydown(row.chart, $event)"
+            <span class="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-xl py-0 pr-3 pl-1 text-left">
+              <span class="chart-sort-handle" data-drag-handle aria-hidden="true" @click.stop>
+                <svg viewBox="0 0 16 16" class="h-4 w-4" fill="currentColor" draggable="false">
+                  <circle cx="5" cy="4" r="1.15" />
+                  <circle cx="11" cy="4" r="1.15" />
+                  <circle cx="5" cy="8" r="1.15" />
+                  <circle cx="11" cy="8" r="1.15" />
+                  <circle cx="5" cy="12" r="1.15" />
+                  <circle cx="11" cy="12" r="1.15" />
+                </svg>
+              </span>
+              <span class="min-w-0 truncate">{{ chart.name }}</span>
+              <span
+                class="ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset"
+                :class="
+                  isCurrent(chart.key)
+                    ? 'bg-white/10 text-zinc-300 ring-white/20 dark:bg-zinc-900/10 dark:text-zinc-500 dark:ring-zinc-900/20'
+                    : 'bg-zinc-100 text-zinc-500 ring-zinc-200/70 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10'
+                "
               >
-                <span class="min-w-0 truncate">{{ row.chart.name }}</span>
-                <span
-                  class="ml-auto shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset"
-                  :class="
-                    isCurrent(row.chart.key)
-                      ? 'bg-white/10 text-zinc-300 ring-white/20 dark:bg-zinc-900/10 dark:text-zinc-500 dark:ring-zinc-900/20'
-                      : 'bg-zinc-100 text-zinc-500 ring-zinc-200/70 dark:bg-white/5 dark:text-zinc-400 dark:ring-white/10'
-                  "
-                >
-                  {{ groupLabelByKey.get(row.chart.key) ?? '' }}
-                </span>
-              </button>
-            </template>
+                {{ groupLabelByKey.get(chart.key) ?? '' }}
+              </span>
+            </span>
           </div>
         </TransitionGroup>
         <p v-if="!visibleCharts.length" class="px-3 py-6 text-center text-sm text-zinc-500">没有匹配的榜</p>
@@ -573,7 +802,13 @@ onUnmounted(() => {
         aria-label="榜单排序"
       >
         <span class="mr-auto truncate px-1 text-xs text-zinc-500">
-          {{ activeChart ? `排序：${activeChart.name}` : "选择榜单后排序" }}
+          {{
+            coarsePointer
+              ? "拖动手柄排序"
+              : activeChart
+                ? `排序：${activeChart.name}`
+                : "选择榜单后排序"
+          }}
         </span>
         <button
           type="button"
@@ -605,18 +840,16 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="lifted"
-        class="pointer-events-none fixed z-[80] flex min-h-11 items-center rounded-xl px-3 text-sm shadow-2xl ring-1 ring-black/10 dark:ring-white/15"
+        ref="ghostEl"
+        class="chart-drag-ghost pointer-events-none fixed top-0 z-[80] flex min-h-11 items-center rounded-xl px-3 text-sm shadow-2xl ring-1 ring-black/10 dark:ring-white/15"
         :class="
           ghost.selected
             ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
             : 'bg-white text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100'
         "
         :style="{
-          top: `${ghost.top}px`,
           left: `${ghost.left}px`,
           width: `${ghost.width}px`,
-          transform: 'scale(1.04)',
-          opacity: 0.88,
         }"
       >
         <span class="truncate">{{ ghost.name }}</span>

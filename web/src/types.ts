@@ -128,11 +128,17 @@ export interface HealthSource {
   last_item_count: number | null;
 }
 
+export interface HealthDownloadSource {
+  id: string;
+  name: string;
+}
+
 export interface HealthPayload {
   status: "starting" | "ready" | "degraded";
   staleness_multiplier: number;
   sources: HealthSource[];
   fallback: HealthFallback | null;
+  download_sources?: HealthDownloadSource[];
 }
 
 /** Link-out fallback: a failed download is handed over to an external share page. */

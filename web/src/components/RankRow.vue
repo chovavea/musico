@@ -31,10 +31,10 @@ const delta = computed(() => {
 });
 
 const rankKlass = computed(() => {
-  if (props.item.rank === 1) return "text-xl text-amber-800 dark:text-amber-300";
-  if (props.item.rank === 2) return "text-lg text-zinc-700 dark:text-zinc-300";
-  if (props.item.rank === 3) return "text-lg text-amber-700 dark:text-amber-400";
-  return "text-zinc-600 dark:text-zinc-300";
+  if (props.item.rank === 1) return "text-[1.15rem] text-amber-800 dark:text-amber-300";
+  if (props.item.rank === 2) return "text-[0.95rem] text-zinc-700 dark:text-zinc-300";
+  if (props.item.rank === 3) return "text-[0.95rem] text-amber-700 dark:text-amber-400";
+  return "text-[0.95rem] text-zinc-600 dark:text-zinc-300";
 });
 
 const active = computed(
@@ -60,7 +60,7 @@ function onPlay() {
       :aria-label="`播放 ${item.title} · ${item.artist}`"
       @click="onPlay"
     />
-    <div class="pointer-events-none tabular text-right font-semibold" :class="rankKlass">
+    <div class="pointer-events-none tabular text-right text-[0.95rem] font-extrabold tracking-[0.02em]" :class="rankKlass">
       {{ String(item.rank).padStart(2, "0") }}
     </div>
     <div class="pointer-events-none relative h-11 w-11 overflow-hidden rounded-lg">
@@ -77,10 +77,10 @@ function onPlay() {
       </span>
     </div>
     <div class="pointer-events-none min-w-0">
-      <div class="truncate font-medium" :class="active ? 'text-emerald-600 dark:text-emerald-300' : ''">
+      <div class="type-title truncate" :class="active ? 'text-emerald-600 dark:text-emerald-300' : ''">
         {{ item.title }}
       </div>
-      <div class="truncate text-sm text-zinc-500 dark:text-zinc-400">{{ item.artist }}</div>
+      <div class="truncate text-[0.74rem] text-artist">{{ item.artist }}</div>
     </div>
     <div class="flex items-center justify-self-end gap-2 text-sm">
       <span class="pointer-events-none tabular hidden w-8 shrink-0 text-right text-zinc-600 sm:inline dark:text-zinc-300">{{ Math.round(item.normalized_score) }}</span>

@@ -1,0 +1,73 @@
+# musico 正式部署。对方机器上：
+#   1. docker load -i musico-stack.tar.gz
+#   2. cp .env.example .env   # 改 POSTGRES_PASSWORD、建议填 API_TOKEN
+#   3. docker compose up -d
+# 打开 http://<主机>:8080
+#
+# 应用镜像已打进榜单配置与前端静态资源，不需要源码。
+# 不要水平扩容 musico（下载 worker 是单实例，不能共用同一音乐目录）。
+
+name: musico
+
+services:
+  musico:
+    image: musico:latest
+    pull_policy: missing
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ENABLE_MEDIA_RESOLVER: "false"
+      LOG_LEVEL: INFO
+      STALENESS_MULTIPLIER: "2"
+      TZ: Asia/Shanghai
+      API_TOKEN: ${API_TOKEN:-}
+      BOARDS_YAML: /app/configs/boards.yaml
+      MUSIC_LIBRARY_DIR: /app/data/music
+      DOWNLOAD_SOURCE_CONFIG: /app/configs/download_sources.yaml
+      DOWNLOAD_SOURCE_DIRS: /app/download_sources
+    volumes:
+      - ./data/music:/app/data/music
+      # 要改榜单或下载源配置时，先从容器拷出再挂回来：
+      #   docker cp musico-app:/app/configs ./configs
+      # - ./configs:/app/configs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/platforms', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    container_name: musico-app
+
+  postgres:
+    image: postgres:16-alpine
+    pull_policy: missing
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    container_name: musico-postgres
+
+volumes:
+  postgres_data:
+    name: musico_postgres_data

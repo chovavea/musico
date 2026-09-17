@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { isAbortError, searchTracks } from "./api";
 import AppIcon from "./components/AppIcon.vue";
+import PageStage from "./components/PageStage.vue";
 import PlayerBar from "./components/PlayerBar.vue";
 import SettingsMenu from "./components/SettingsMenu.vue";
+import ComingSoonToast from "./components/ComingSoonToast.vue";
+import GlazeLayout from "./layouts/GlazeLayout.vue";
 import { platformLabel, platformShortName } from "./lib/boards";
 import { useChartsStore } from "./stores/charts";
 import { useHealthStore } from "./stores/health";
 import { usePlayerStore } from "./stores/player";
+import { usePageAmbient } from "./composables/usePageAmbient";
+import { useSlidingPill } from "./composables/useSlidingPill";
+import { useThemeStore } from "./stores/theme";
 import type { SearchResult } from "./types";
+
+const theme = useThemeStore();
+usePageAmbient();
 
 const route = useRoute();
 const router = useRouter();
@@ -26,6 +35,7 @@ const activeSuggestion = ref(-1);
 const searchRoot = ref<HTMLElement | null>(null);
 const searchInput = ref<HTMLInputElement | null>(null);
 const searchTrigger = ref<HTMLButtonElement | null>(null);
+const suggestionsEl = ref<HTMLElement | null>(null);
 let searchTimer = 0;
 let searchRequestNo = 0;
 let searchController: AbortController | null = null;
@@ -48,12 +58,20 @@ const currentChartPlatform = computed(() => {
   return "";
 });
 
+const desktopNav = ref<HTMLElement | null>(null);
+const mobileNav = ref<HTMLElement | null>(null);
+const navActive = computed(() =>
+  route.name === "overview" ? "overview" : currentChartPlatform.value,
+);
+const desktopPill = useSlidingPill(desktopNav, () => [navActive.value, navBoards.value.length]);
+const mobilePill = useSlidingPill(mobileNav, () => [navActive.value, navBoards.value.length]);
+
 function navClass(active: boolean): string {
   return [
-    "grid h-11 place-items-center rounded-full px-2 text-sm transition md:h-auto md:px-3 md:py-1.5",
+    "type-title relative z-10 grid h-11 place-items-center rounded-full px-2 transition-colors duration-200 md:h-auto md:px-3 md:py-1.5",
     active
-      ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
-      : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/10",
+      ? "text-white dark:text-zinc-900"
+      : "text-zinc-900 hover:bg-zinc-100/80 dark:text-zinc-100 dark:hover:bg-white/10",
   ].join(" ");
 }
 
@@ -108,34 +126,45 @@ async function loadSuggestions(query: string) {
 function closeSearchPanel() {
   searchOpen.value = false;
   activeSuggestion.value = -1;
+  if (!searchQuery.value.trim()) {
+    suggestions.value = [];
+    suggestionsError.value = "";
+    suggestionsLoading.value = false;
+  }
 }
 
 function openSearchPanel() {
   searchOpen.value = true;
   void nextTick(() => {
-    searchInput.value?.focus();
+    searchInput.value?.focus({ preventScroll: true });
   });
 }
 
 function toggleSearch() {
   if (searchOpen.value) {
     closeSearchPanel();
-    searchTrigger.value?.focus();
+    restoreSearchTrigger();
     return;
   }
   openSearchPanel();
 }
 
 function onDocumentPointerDown(event: PointerEvent) {
-  if (!searchOpen.value || !(event.target instanceof Node)) return;
-  if (searchRoot.value?.contains(event.target)) return;
+  if (!searchOpen.value || !(event.target instanceof Element)) return;
+  if (event.target.closest("[data-search-ui]")) return;
   closeSearchPanel();
+}
+
+function restoreSearchTrigger() {
+  void nextTick(() => {
+    searchTrigger.value?.focus({ preventScroll: true });
+  });
 }
 
 function onDocumentKey(event: KeyboardEvent) {
   if (event.key === "Escape" && searchOpen.value) {
     closeSearchPanel();
-    searchTrigger.value?.focus();
+    restoreSearchTrigger();
   }
 }
 
@@ -155,7 +184,7 @@ function onSearchKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     event.preventDefault();
     closeSearchPanel();
-    searchTrigger.value?.focus();
+    restoreSearchTrigger();
     return;
   }
   if (event.key === "ArrowDown" && suggestions.value.length) {
@@ -199,6 +228,10 @@ watch(
   () => route.query.q,
   (value) => {
     searchQuery.value = value == null ? "" : String(value);
+    if (!searchQuery.value.trim()) {
+      suggestions.value = [];
+      suggestionsError.value = "";
+    }
   },
 );
 watch(
@@ -219,6 +252,9 @@ onUnmounted(() => {
 
 <template>
   <div class="relative min-h-dvh">
+    <Transition name="shell">
+      <GlazeLayout v-if="theme.isGlaze" key="glaze" />
+      <div v-else key="minimal" class="relative min-h-dvh" data-shell="minimal">
     <a
       href="#main-content"
       class="sr-only fixed left-4 top-4 z-[110] rounded-lg bg-white px-4 py-3 text-zinc-900 focus:not-sr-only"
@@ -228,40 +264,51 @@ onUnmounted(() => {
     <header
       class="sticky top-0 z-20 border-b border-zinc-200 bg-white/95 pt-[env(safe-area-inset-top,0px)] dark:border-white/10 dark:bg-zinc-950/95"
     >
-      <div class="mx-auto grid max-w-7xl grid-cols-[auto_minmax(0,1fr)] items-center gap-2 px-4 py-2 md:py-3">
-        <RouterLink to="/" class="flex min-h-11 items-center gap-2" aria-label="Musico 首页">
+      <div class="mx-auto grid max-w-7xl grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 px-4 py-2 md:py-3">
+        <RouterLink to="/" class="flex min-h-11 items-center gap-2.5" aria-label="Musico 首页">
           <span
-            class="grid h-8 w-8 place-items-center rounded-xl bg-zinc-900 text-sm font-bold text-white dark:bg-white dark:text-zinc-900"
+            class="grid h-11 w-11 place-items-center rounded-2xl bg-zinc-900 text-[1.35rem] font-extrabold tracking-[-0.04em] text-white dark:bg-white dark:text-zinc-900"
           >
             m
           </span>
-          <span class="text-lg font-semibold tracking-tight">musico</span>
+          <span class="text-[1.35rem] font-extrabold leading-none tracking-[-0.04em]">musico</span>
         </RouterLink>
 
         <div class="flex min-w-0 items-center justify-end gap-1">
-          <nav class="hidden max-w-full items-center overflow-x-auto md:flex" aria-label="主要导航">
-            <RouterLink to="/" :class="navClass(route.name === 'overview')">总览</RouterLink>
+          <nav
+            ref="desktopNav"
+            class="relative hidden max-w-full items-center overflow-x-auto md:flex"
+            aria-label="主要导航"
+          >
+            <span class="nav-pill nav-pill-ink" :style="desktopPill" aria-hidden="true" />
+            <RouterLink
+              to="/"
+              :data-nav-on="route.name === 'overview'"
+              :class="navClass(route.name === 'overview')"
+            >
+              总览
+            </RouterLink>
             <RouterLink
               v-for="board in navBoards"
               :key="board.platform"
               :to="navTo(board.id)"
+              :data-nav-on="currentChartPlatform === board.platform"
               :class="navClass(currentChartPlatform === board.platform)"
             >
               {{ platformShortName(board.platform, charts.platforms) }}
             </RouterLink>
           </nav>
-          <div ref="searchRoot" class="relative flex min-w-0 items-center justify-end gap-1">
+          <div
+            ref="searchRoot"
+            data-search-ui
+            class="relative flex min-w-0 flex-1 items-center justify-end"
+          >
             <form
               v-if="searchOpen"
-              class="relative min-w-0 flex-1 md:max-w-xs"
+              class="min-w-0 w-full"
               @submit.prevent="submitSearch"
             >
               <label class="sr-only" for="global-search">搜索歌曲</label>
-              <AppIcon
-                name="search"
-                :size="16"
-                class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"
-              />
               <input
                 id="global-search"
                 ref="searchInput"
@@ -269,8 +316,8 @@ onUnmounted(() => {
                 type="search"
                 autocomplete="off"
                 enterkeyhint="search"
-                placeholder="搜索歌曲或歌手"
-                class="h-11 w-full rounded-full bg-zinc-100 pl-9 pr-3 text-sm outline-none ring-1 ring-transparent transition placeholder:text-zinc-400 focus:bg-white focus:ring-zinc-300 dark:bg-zinc-800 dark:focus:bg-zinc-800 dark:focus:ring-white/20"
+                placeholder="搜索歌曲"
+                class="h-8 w-full appearance-none rounded-full bg-zinc-100 px-3 text-[16px] leading-8 outline-none ring-1 ring-zinc-200/70 transition placeholder:text-zinc-400 focus:bg-white focus:ring-zinc-300 dark:bg-zinc-800 dark:ring-white/10 dark:focus:bg-zinc-800 dark:focus:ring-white/20"
                 @input="scheduleSuggestionSearch"
                 @keydown="onSearchKeydown"
               />
@@ -278,8 +325,8 @@ onUnmounted(() => {
             <button
               ref="searchTrigger"
               type="button"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
-              :class="searchOpen ? 'bg-zinc-100 text-zinc-900 dark:bg-white/10 dark:text-white' : ''"
+              class="search-trigger grid h-11 w-11 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white"
+              :class="searchOpen ? 'text-zinc-900 dark:text-white' : ''"
               :aria-expanded="searchOpen"
               aria-controls="global-search-suggestions"
               aria-label="搜索"
@@ -287,87 +334,103 @@ onUnmounted(() => {
             >
               <AppIcon name="search" :size="24" />
             </button>
-            <div
-              v-if="searchOpen && (suggestionsLoading || suggestionsError || suggestions.length || searchQuery.trim().length >= 1)"
-              id="global-search-suggestions"
-              class="absolute right-0 top-full z-30 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl bg-white shadow-xl ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
-            >
-              <div class="max-h-80 overflow-y-auto">
-                  <div v-if="suggestionsLoading" class="px-4 py-4 text-sm text-zinc-500">
-                    正在搜索…
-                  </div>
-                  <div v-else-if="suggestionsError" class="px-4 py-4 text-sm text-rose-600 dark:text-rose-300">
-                    {{ suggestionsError }}，按 Enter 仍可查看全部结果
-                  </div>
-                  <template v-else-if="suggestions.length">
-                    <button
-                      v-for="(result, index) in suggestions"
-                      :key="`${result.platform}:${result.external_id}`"
-                      type="button"
-                      class="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-zinc-50 dark:hover:bg-white/5"
-                      :class="activeSuggestion === index ? 'bg-zinc-50 dark:bg-white/5' : ''"
-                      @click="chooseSuggestion(result)"
-                    >
-                      <div class="min-w-0 flex-1">
-                        <div class="truncate text-sm font-medium">{{ result.title }}</div>
-                        <div class="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                          {{ result.artist }}
-                        </div>
-                      </div>
-                      <span class="flex shrink-0 gap-1 text-xs text-zinc-400">
-                        <span
-                          v-for="source in result.platforms"
-                          :key="`${source.platform}:${source.external_id}`"
-                        >
-                          {{ platformLabel(source.platform) }}
-                        </span>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      class="w-full border-t border-zinc-100 px-4 py-3 text-left text-sm text-zinc-500 hover:bg-zinc-50 dark:border-white/5 dark:text-zinc-400 dark:hover:bg-white/5"
-                      @click="submitSearch"
-                    >
-                      查看全部结果
-                    </button>
-                  </template>
-                  <div v-else class="px-4 py-4 text-sm text-zinc-500">
-                    暂无匹配歌曲，按 Enter 查看结果
-                  </div>
-              </div>
-            </div>
           </div>
           <SettingsMenu />
         </div>
 
         <nav
-          class="col-span-2 flex gap-1 overflow-x-auto rounded-full bg-zinc-200/80 p-1 text-zinc-700 md:hidden dark:bg-zinc-800 dark:text-zinc-200"
+          ref="mobileNav"
+          class="relative col-span-2 flex gap-1 overflow-x-auto rounded-full bg-zinc-200/80 p-1 text-zinc-700 md:hidden dark:bg-zinc-800 dark:text-zinc-200"
           aria-label="主要导航"
         >
-          <RouterLink to="/" class="min-w-fit flex-1" :class="navClass(route.name === 'overview')">总览</RouterLink>
+          <span class="nav-pill nav-pill-ink" :style="mobilePill" aria-hidden="true" />
+          <RouterLink
+            to="/"
+            class="min-w-fit flex-1"
+            :data-nav-on="route.name === 'overview'"
+            :class="navClass(route.name === 'overview')"
+          >
+            总览
+          </RouterLink>
           <RouterLink
             v-for="board in navBoards"
             :key="board.platform"
             class="min-w-fit flex-1"
             :to="navTo(board.id)"
+            :data-nav-on="currentChartPlatform === board.platform"
             :class="navClass(currentChartPlatform === board.platform)"
           >
             {{ platformShortName(board.platform, charts.platforms) }}
           </RouterLink>
         </nav>
       </div>
+      <div
+        v-if="searchOpen && (suggestionsLoading || suggestionsError || suggestions.length || searchQuery.trim().length >= 1)"
+        id="global-search-suggestions"
+        ref="suggestionsEl"
+        data-search-ui
+        class="absolute right-4 top-full z-30 mt-1.5 w-[min(16.5rem,calc(100vw-2rem))] overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
+        @pointerdown.stop
+      >
+        <div class="max-h-64 overflow-y-auto">
+          <div v-if="suggestionsLoading" class="px-3 py-2.5 text-sm text-zinc-500">
+            正在搜索…
+          </div>
+          <div v-else-if="suggestionsError" class="px-3 py-2.5 text-sm text-rose-600 dark:text-rose-300">
+            {{ suggestionsError }}，按 Enter 仍可查看全部结果
+          </div>
+          <template v-else-if="suggestions.length">
+            <button
+              v-for="(result, index) in suggestions"
+              :key="`${result.platform}:${result.external_id}`"
+              type="button"
+              class="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-zinc-50 dark:hover:bg-white/5"
+              :class="activeSuggestion === index ? 'bg-zinc-50 dark:bg-white/5' : ''"
+              @click="chooseSuggestion(result)"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="type-title truncate">{{ result.title }}</div>
+                <div class="truncate text-[0.74rem] text-artist">
+                  {{ result.artist }}
+                </div>
+              </div>
+              <span class="flex shrink-0 gap-1 text-xs text-zinc-400">
+                <span
+                  v-for="source in result.platforms"
+                  :key="`${source.platform}:${source.external_id}`"
+                >
+                  {{ platformLabel(source.platform) }}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              class="w-full border-t border-zinc-100 px-3 py-2.5 text-left text-sm text-zinc-500 hover:bg-zinc-50 dark:border-white/5 dark:text-zinc-400 dark:hover:bg-white/5"
+              @click="submitSearch"
+            >
+              查看全部结果
+            </button>
+          </template>
+          <div v-else class="px-3 py-2.5 text-sm text-zinc-500">
+            暂无匹配歌曲，按 Enter 查看结果
+          </div>
+        </div>
+      </div>
     </header>
     <main
       id="main-content"
-      class="mx-auto max-w-7xl px-4 pt-4 md:pt-6"
+      class="page-stage mx-auto max-w-7xl px-4 pt-4 md:pt-6"
       :class="
         player.current
           ? 'pb-[calc(var(--player-bar-h,5.5rem)+1rem)] md:pb-[calc(var(--player-bar-h,5.5rem)+1.5rem)]'
           : 'pb-4 md:pb-6'
       "
     >
-      <RouterView />
+      <PageStage />
     </main>
     <PlayerBar v-if="player.current" />
+    <ComingSoonToast />
+      </div>
+    </Transition>
   </div>
 </template>

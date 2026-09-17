@@ -37,7 +37,9 @@ from app.domain.models import (
     is_allowed_download_format,
     normalize_audio_format,
 )
+from app.download_sources.protocol import DownloadSourceAccessLimited
 from app.download_sources.registry import DownloadSourceRegistry
+from app.services.download_source_circuit import CIRCUITS
 from app.settings import Settings
 
 UrlGuard = Callable[[str, Sequence[str]], Awaitable[None]]
@@ -118,7 +120,19 @@ class DownloadWorker:
             track = _track_from_row(track_row)
             previous_source_id = task.selected_source_id
             previous_source_track_id = task.selected_source_track_id
-            candidates = await self._candidate_pool(session, repo, task, track)
+            try:
+                candidates = await self._candidate_pool(session, repo, task, track)
+            except DownloadSourceAccessLimited:
+                if not await repo.has_lease(task):
+                    await session.rollback()
+                    return
+                if await repo.mark_failed(task, "download source access limited"):
+                    self._cleanup_partial(task)
+                    await repo.fail_waiting_tasks(
+                        "download source access limited", exclude_id=task.id
+                    )
+                await session.commit()
+                return
             if not await repo.has_lease(task):
                 await session.rollback()
                 return
@@ -252,14 +266,25 @@ class DownloadWorker:
                 ]
             return snapshot_candidates
         candidates: list[DownloadCandidate] = []
+        access_limited = False
         # Search sources in their configured quality priority order.  Searching
         # concurrently would make a lower-quality source race a higher-quality
         # one and would also make upstream load unpredictable.
         for record in self._sources.enabled():
+            if not CIRCUITS.allow(record.source_id):
+                access_limited = True
+                continue
             try:
                 result = await record.source.search(track)
-            except Exception:
+            except DownloadSourceAccessLimited:
+                CIRCUITS.note_limited(record.source_id)
+                access_limited = True
                 continue
+            except Exception:
+                CIRCUITS.note_inconclusive(record.source_id)
+                log.exception("download_source_search_failed", source_id=record.source_id)
+                continue
+            CIRCUITS.note_ok(record.source_id)
             candidates.extend(
                 candidate
                 for candidate in result
@@ -284,6 +309,8 @@ class DownloadWorker:
                 )
             )
         if not candidates:
+            if access_limited:
+                raise DownloadSourceAccessLimited("download source access limited")
             return []
         candidates.sort(
             key=lambda item: (

@@ -7,6 +7,8 @@ export const router = createRouter({
   },
   routes: [
     { path: "/", name: "overview", component: () => import("./pages/OverviewPage.vue"), meta: { title: "总览" } },
+    { path: "/discover", name: "discover", component: () => import("./pages/DiscoverPage.vue"), meta: { title: "发现" } },
+    { path: "/profile", name: "profile", component: () => import("./pages/ProfilePage.vue"), meta: { title: "个人中心" } },
     { path: "/boards", name: "boards", component: () => import("./pages/BoardsPage.vue"), meta: { title: "榜单管理" } },
     {
       path: "/charts/:board",
@@ -26,6 +28,8 @@ router.afterEach((to) => {
   const title = typeof to.meta.title === "string" ? to.meta.title : "Musico";
   document.title = title === "Musico" ? title : `${title} · Musico`;
   window.requestAnimationFrame(() => {
-    document.querySelector<HTMLElement>("[data-page-heading]")?.focus({ preventScroll: true });
+    document.querySelector<HTMLElement>("[data-page-heading]")?.focus({
+      preventScroll: true,
+    });
   });
 });

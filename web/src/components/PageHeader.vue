@@ -24,18 +24,18 @@ withDefaults(
     <RouterLink
       v-if="backTo"
       :to="backTo"
-      class="mb-3 inline-flex min-h-11 items-center gap-1 text-sm text-secondary transition hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+      class="mb-3 inline-flex min-h-11 items-center gap-1 text-sm text-secondary transition hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-400 dark:focus-visible:outline-zinc-600"
     >
       <AppIcon name="chevron-left" :size="18" />
       {{ backLabel }}
     </RouterLink>
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div class="min-w-0">
-        <p v-if="eyebrow" class="text-sm text-tertiary">{{ eyebrow }}</p>
+        <p v-if="eyebrow" class="text-[0.72rem] tracking-[0.08em] text-tertiary">{{ eyebrow }}</p>
         <h1
           data-page-heading
           tabindex="-1"
-          class="mt-1 text-2xl font-semibold tracking-tight outline-none md:text-3xl"
+          class="mt-1 text-[1.35rem] font-extrabold leading-[1.15] tracking-[0.02em] outline-none md:text-[1.5rem]"
         >
           {{ title }}
         </h1>

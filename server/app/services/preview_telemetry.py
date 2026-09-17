@@ -246,8 +246,11 @@ CACHE = PreviewCache()
 
 def reset_preview_telemetry() -> None:
     """Drop cached decisions and rate estimates (used by tests and reloads)."""
+    from app.services.download_source_circuit import CIRCUITS
+
     RATES.clear()
     CACHE.clear()
+    CIRCUITS.clear()
 
 
 def cache_key(track: TrackRef) -> str:

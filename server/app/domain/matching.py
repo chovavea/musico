@@ -50,6 +50,21 @@ _CJK_VERSION_MARKERS = (
     "加速版",
     "慢速版",
 )
+# Listen-only: a ringtone or snippet is not a full song, even when the title
+# otherwise matches. Live / remix stay out of this list — those are complete edits.
+_INCOMPLETE_LISTEN_CJK = (
+    "片段",
+    "铃声",
+    "试听版",
+    "铃声版",
+    "截取",
+    "彩铃",
+    "30秒",
+    "60秒",
+)
+_INCOMPLETE_LISTEN_ASCII = ("ringtone", "snippet")
+LISTEN_SNIPPET_MAX_MS = 90_000
+LISTEN_FULL_ORIGIN_MIN_MS = 120_000
 
 
 def version_markers(value: str | None) -> frozenset[str]:
@@ -129,6 +144,41 @@ def is_auto_match(left: TrackRef, right: TrackRef) -> bool:
     return track_match_score(left, right) >= 0.9
 
 
+def is_incomplete_listen_edit(track: TrackRef) -> bool:
+    """Whether the title/version marks this as a ringtone, snippet, or clip."""
+    text = fold_traditional(
+        unicodedata.normalize("NFKC", f"{track.version or ''} {track.title}").casefold()
+    )
+    if any(marker in text for marker in _INCOMPLETE_LISTEN_CJK):
+        return True
+    return any(
+        re.search(rf"(?<![a-z]){marker}(?![a-z])", text)
+        for marker in _INCOMPLETE_LISTEN_ASCII
+    )
+
+
+def is_incomplete_listen_duration(origin_ms: int | None, candidate_ms: int | None) -> bool:
+    """Reject a short clip when the requested track is a full-length song."""
+    if origin_ms is None or candidate_ms is None:
+        return False
+    if origin_ms < LISTEN_FULL_ORIGIN_MIN_MS:
+        return False
+    return candidate_ms < LISTEN_SNIPPET_MAX_MS and candidate_ms < origin_ms * 0.5
+
+
+def listen_candidate_is_incomplete(origin: TrackRef, candidate: TrackRef) -> bool:
+    if is_incomplete_listen_edit(candidate) and not is_incomplete_listen_edit(origin):
+        return True
+    return is_incomplete_listen_duration(origin.duration_ms, candidate.duration_ms)
+
+
+def is_listen_match(origin: TrackRef, candidate: TrackRef) -> bool:
+    """Strict listen match: same recording, and not a ringtone/snippet."""
+    if listen_candidate_is_incomplete(origin, candidate):
+        return False
+    return is_auto_match(origin, candidate)
+
+
 def loose_title_key(value: str | None) -> str:
     """Title key with every parenthetical alias stripped, not only live/remix tags."""
     return fold_traditional(normalize_text(_BRACKETS_RE.sub(" ", value or "")))
@@ -154,6 +204,13 @@ def fuzzy_title_score(left: str | None, right: str | None) -> float:
     if shorter in longer:
         return 0.9 * (len(shorter) / len(longer))
     return SequenceMatcher(None, origin, candidate).ratio()
+
+
+def is_fuzzy_listen_match(origin: TrackRef, candidate: TrackRef) -> bool:
+    """Last-resort listen match that still drops ringtones and snippets."""
+    if listen_candidate_is_incomplete(origin, candidate):
+        return False
+    return is_fuzzy_preview_match(origin, candidate)
 
 
 def is_fuzzy_preview_match(origin: TrackRef, candidate: TrackRef) -> bool:

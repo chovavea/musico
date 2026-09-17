@@ -2,7 +2,10 @@ from app.domain.matching import (
     fuzzy_preview_rank,
     is_auto_match,
     is_cross_platform_match,
+    is_fuzzy_listen_match,
     is_fuzzy_preview_match,
+    is_incomplete_listen_duration,
+    is_listen_match,
     is_same_recording,
     normalize_text,
     title_match_key,
@@ -195,3 +198,42 @@ def test_fuzzy_preview_ranks_the_original_artist_ahead_of_a_cover() -> None:
     original = TrackRef(platform="flmp3", external_id="o1", title="稻香", artist="周杰伦")
     assert is_fuzzy_preview_match(origin, cover)
     assert fuzzy_preview_rank(origin, original) > fuzzy_preview_rank(origin, cover)
+
+
+def test_listen_match_rejects_ringtones_and_snippets() -> None:
+    studio = TrackRef(
+        platform="chart",
+        external_id="1",
+        title="晴天",
+        artist="周杰伦",
+        duration_ms=269_000,
+    )
+    ringtone = TrackRef(
+        platform="source",
+        external_id="2",
+        title="晴天",
+        artist="周杰伦",
+        duration_ms=269_000,
+        version="铃声",
+    )
+    snippet = TrackRef(
+        platform="source",
+        external_id="3",
+        title="晴天 (片段)",
+        artist="周杰伦",
+        duration_ms=30_000,
+    )
+    live = TrackRef(
+        platform="source",
+        external_id="4",
+        title="晴天 (Live)",
+        artist="周杰伦",
+        duration_ms=None,
+    )
+    assert is_auto_match(studio, ringtone)
+    assert not is_listen_match(studio, ringtone)
+    assert is_fuzzy_preview_match(studio, snippet)
+    assert not is_fuzzy_listen_match(studio, snippet)
+    assert is_fuzzy_listen_match(studio, live)
+    assert not is_incomplete_listen_duration(269_000, 100_000)
+    assert is_incomplete_listen_duration(269_000, 30_000)

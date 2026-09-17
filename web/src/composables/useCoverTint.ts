@@ -1,6 +1,7 @@
 import { computed, onMounted, ref, watch, type Ref } from "vue";
 import { storeToRefs } from "pinia";
 import { coverImageUrl } from "../lib/cover-image";
+import { hslToRgb as toRgb, rgbToHsl, type RGB } from "../lib/morandi";
 import { useThemeStore } from "../stores/theme";
 
 export type CoverPalette = {
@@ -13,8 +14,6 @@ export type CoverPalette = {
   hover: string;
   active: string;
 };
-
-type RGB = [number, number, number];
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
@@ -29,41 +28,8 @@ function rgb(r: number, g: number, b: number, a?: number): string {
   return `rgb(${channel(r)} ${channel(g)} ${channel(b)} / ${a})`;
 }
 
-function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
-  r /= 255;
-  g /= 255;
-  b /= 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  if (d === 0) return [0, 0, l];
-  const s = d / (1 - Math.abs(2 * l - 1));
-  let h = 0;
-  if (max === r) h = ((g - b) / d) % 6;
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  h *= 60;
-  if (h < 0) h += 360;
-  return [h, s, l];
-}
-
 function hslToRgb(h: number, s: number, l: number): RGB {
-  s = clamp(s, 0.18, 0.62);
-  l = clamp(l, 0.16, 0.88);
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = l - c / 2;
-  let rp = 0;
-  let gp = 0;
-  let bp = 0;
-  if (h < 60) [rp, gp, bp] = [c, x, 0];
-  else if (h < 120) [rp, gp, bp] = [x, c, 0];
-  else if (h < 180) [rp, gp, bp] = [0, c, x];
-  else if (h < 240) [rp, gp, bp] = [0, x, c];
-  else if (h < 300) [rp, gp, bp] = [x, 0, c];
-  else [rp, gp, bp] = [c, 0, x];
-  return [(rp + m) * 255, (gp + m) * 255, (bp + m) * 255];
+  return toRgb(h, clamp(s, 0.18, 0.62), clamp(l, 0.16, 0.88));
 }
 
 function fallbackPalette(dark: boolean): CoverPalette {
@@ -117,27 +83,31 @@ function paletteFromRgb(sample: RGB, dark: boolean): CoverPalette {
 }
 
 function samplePixels(data: Uint8ClampedArray): RGB | null {
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let w = 0;
+  const buckets = new Map<number, { r: number; g: number; b: number; w: number }>();
   for (let i = 0; i < data.length; i += 4) {
     const a = data[i + 3] ?? 0;
     if (a < 180) continue;
     const pr = data[i] ?? 0;
     const pg = data[i + 1] ?? 0;
     const pb = data[i + 2] ?? 0;
-    const [, sat, lit] = rgbToHsl(pr, pg, pb);
+    const [hue, sat, lit] = rgbToHsl(pr, pg, pb);
     if (sat < 0.08 || lit < 0.08 || lit > 0.92) continue;
     const weight = sat * sat * (1 - Math.abs(lit - 0.48) * 1.4);
     if (weight <= 0) continue;
-    r += pr * weight;
-    g += pg * weight;
-    b += pb * weight;
-    w += weight;
+    const key = Math.round(hue / 18) * 18;
+    const slot = buckets.get(key) ?? { r: 0, g: 0, b: 0, w: 0 };
+    slot.r += pr * weight;
+    slot.g += pg * weight;
+    slot.b += pb * weight;
+    slot.w += weight;
+    buckets.set(key, slot);
   }
-  if (w < 0.001) return null;
-  return [r / w, g / w, b / w];
+  let best: { r: number; g: number; b: number; w: number } | null = null;
+  for (const slot of buckets.values()) {
+    if (!best || slot.w > best.w) best = slot;
+  }
+  if (!best || best.w < 0.001) return null;
+  return [best.r / best.w, best.g / best.w, best.b / best.w];
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -156,22 +126,39 @@ function sourcesFor(url: string): string[] {
   return proxied ? [proxied] : [];
 }
 
-async function extractRgb(url: string): Promise<RGB | null> {
-  for (const src of sourcesFor(url)) {
-    try {
-      const image = await loadImage(src);
-      const canvas = document.createElement("canvas");
-      canvas.width = 32;
-      canvas.height = 32;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      ctx.drawImage(image, 0, 0, 32, 32);
-      return samplePixels(ctx.getImageData(0, 0, 32, 32).data);
-    } catch {
-      continue;
+const rgbCache = new Map<string, RGB | null>();
+const inflight = new Map<string, Promise<RGB | null>>();
+
+export async function extractCoverRgb(url: string): Promise<RGB | null> {
+  if (rgbCache.has(url)) return rgbCache.get(url) ?? null;
+  const pending = inflight.get(url);
+  if (pending) return pending;
+  const task = (async () => {
+    for (const src of sourcesFor(url)) {
+      try {
+        const image = await loadImage(src);
+        const canvas = document.createElement("canvas");
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        ctx.drawImage(image, 0, 0, 32, 32);
+        const sampled = samplePixels(ctx.getImageData(0, 0, 32, 32).data);
+        rgbCache.set(url, sampled);
+        return sampled;
+      } catch {
+        continue;
+      }
     }
+    rgbCache.set(url, null);
+    return null;
+  })();
+  inflight.set(url, task);
+  try {
+    return await task;
+  } finally {
+    inflight.delete(url);
   }
-  return null;
 }
 
 export function useCoverPalette(coverUrl: Ref<string | null | undefined>): Ref<CoverPalette> {
@@ -185,9 +172,9 @@ export function useCoverPalette(coverUrl: Ref<string | null | undefined>): Ref<C
   let generation = 0;
   async function extract(url: string): Promise<void> {
     const current = ++generation;
-    const rgb = await extractRgb(url);
+    const value = await extractCoverRgb(url);
     if (current === generation) {
-      sampled.value = rgb;
+      sampled.value = value;
     }
   }
 

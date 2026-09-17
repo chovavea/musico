@@ -1,5 +1,7 @@
 import type { RankItem } from "../types";
+import { downloadErrorLabel } from "../lib/status-labels";
 import { useDownloadsStore } from "../stores/downloads";
+import { useNoticeStore } from "../stores/notice";
 
 export type DownloadActionState = "ready" | "queued" | "idle";
 
@@ -9,6 +11,7 @@ function trackKey(item: RankItem): string {
 
 export function useTrackDownload() {
   const downloads = useDownloadsStore();
+  const notice = useNoticeStore();
 
   function state(item: RankItem): DownloadActionState {
     const local = downloads.localStates[trackKey(item)];
@@ -48,8 +51,10 @@ export function useTrackDownload() {
       });
       if (result.state === "ready") {
         downloads.markLocalReady(key, result.asset?.id, result.asset?.track_id);
+        notice.show("已在音乐库中");
       } else if (["resolving", "queued", "downloading", "retrying"].includes(result.state)) {
         downloads.markLocalQueued(key, result.task?.id);
+        notice.show("已加入下载队列");
       } else {
         downloads.clearLocalState(key);
         // enqueue() already stored response.msg / transport errors on failed.
@@ -58,12 +63,17 @@ export function useTrackDownload() {
             result.task?.last_error || "下载任务未进入可执行状态",
           );
         }
+        notice.show(
+          downloadErrorLabel(downloads.actionError || result.task?.last_error) ||
+            "下载未开始",
+        );
       }
     } catch (error) {
       downloads.clearLocalState(key);
       downloads.setActionError(
         error instanceof Error ? error.message : "下载任务创建失败",
       );
+      notice.show("下载任务创建失败");
     }
   }
 

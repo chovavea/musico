@@ -17,3 +17,5 @@ tmp/
 .playwright-cli/
 data/music/
 data/postgres/
+deploy/*.tar
+deploy/*.tar.gz

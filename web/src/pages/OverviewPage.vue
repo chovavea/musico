@@ -1,98 +1,45 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import BoardColumn from "../components/BoardColumn.vue";
 import HeroCard from "../components/HeroCard.vue";
-import { useStalePoll } from "../composables/useStalePoll";
-import { groupsOf, latestOfBoard, resolveCatalogBoard } from "../lib/catalog-board";
+import GlazeHome from "./GlazeHome.vue";
+import { useOverviewColumns } from "../composables/useOverviewColumns";
+import { useSlidingPill } from "../composables/useSlidingPill";
 import { platformShortName } from "../lib/boards";
 import { todayLabel } from "../lib/format";
-import { useChartsStore } from "../stores/charts";
+import { useThemeStore } from "../stores/theme";
 
-const store = useChartsStore();
-useStalePoll();
-
-const tab = ref(0);
-const keys = ref<Record<string, string>>({});
-const slotOrder: Record<string, number> = { left: 0, right: 1 };
-
-const overviewSources = computed(() =>
-  [...store.boards]
-    .filter((item) => item.enabled)
-    .sort(
-      (a, b) =>
-        (slotOrder[a.overview_slot ?? ""] ?? 2) - (slotOrder[b.overview_slot ?? ""] ?? 2) ||
-        (a.sort_order ?? 10_000) - (b.sort_order ?? 10_000),
-    )
-    .filter(
-      (item, index, items) =>
-        items.findIndex((candidate) => candidate.platform === item.platform) === index,
-    ),
-);
-
-const columns = computed(() =>
-  overviewSources.value.map((source) => {
-    const key = keys.value[source.id] || source.chart_key || "";
-    const board = key
-      ? resolveCatalogBoard(store.catalog, store.boards, source.platform, key)
-      : source;
-    return {
-      source,
-      board,
-      latest: latestOfBoard(store.latest, store.boards, board),
-    };
-  }),
-);
-
-function applyDefaults() {
-  const next = { ...keys.value };
-  for (const source of overviewSources.value) {
-    if (source.chart_key && !next[source.id]) next[source.id] = source.chart_key;
-  }
-  keys.value = next;
-  if (tab.value >= overviewSources.value.length) tab.value = 0;
-}
-
-function setKey(sourceId: string, key: string) {
-  keys.value = { ...keys.value, [sourceId]: key };
-}
-
-watch(
-  () => store.boards.map((item) => `${item.id}:${item.chart_key}:${item.sort_order}`).join(),
-  applyDefaults,
-);
-watch(
-  () => columns.value.map((item) => item.board.id).join(),
-  () => {
-    for (const column of columns.value) void store.ensureLatest(column.board);
-  },
-);
-
-let retryTimer = 0;
-onMounted(() => {
-  void store.refreshAll().then(() => {
-    applyDefaults();
-    if (columns.value.some((column) => !column.latest?.items.length)) {
-      retryTimer = window.setTimeout(() => void store.refreshAll().then(applyDefaults), 2000);
-    }
-  });
-});
-onUnmounted(() => window.clearTimeout(retryTimer));
+const theme = useThemeStore();
+const { store, tab, columns, setKey, groupsOf } = useOverviewColumns();
+const tabNav = ref<HTMLElement | null>(null);
+const activeColumn = computed(() => columns.value[tab.value]);
+const tabPill = useSlidingPill(tabNav, () => [tab.value, columns.value.length]);
 </script>
 
 <template>
-  <div>
+  <GlazeHome
+    v-if="theme.isGlaze"
+    :columns="columns"
+    :error="store.error"
+    @retry="store.refreshAll()"
+  />
+  <div v-else>
     <section class="mb-6">
-      <p class="text-sm text-secondary">{{ todayLabel() }}</p>
-      <h1 data-page-heading tabindex="-1" class="mt-1 text-2xl font-semibold tracking-tight outline-none md:text-3xl">今日榜单</h1>
+      <p class="text-[0.72rem] tracking-[0.08em] text-secondary">{{ todayLabel() }}</p>
+      <h1 data-page-heading tabindex="-1" class="mt-1 text-[1.35rem] font-extrabold leading-[1.15] tracking-[0.02em] outline-none md:text-[1.5rem]">今日榜单</h1>
     </section>
 
-    <div class="mb-4 flex gap-1 overflow-x-auto rounded-full bg-zinc-200/80 p-1 md:hidden dark:bg-zinc-800">
+    <div
+      ref="tabNav"
+      class="relative mb-4 flex gap-1 overflow-x-auto rounded-full bg-zinc-200/80 p-1 md:hidden dark:bg-zinc-800"
+    >
+      <span class="nav-pill nav-pill-surface" :style="tabPill" aria-hidden="true" />
       <button
         v-for="(column, index) in columns"
         :key="column.source.id"
         type="button"
-        class="grid h-11 min-w-24 flex-1 place-items-center rounded-full px-3 text-sm"
-        :class="tab === index ? 'bg-white dark:bg-zinc-950' : 'text-secondary'"
+        class="type-title relative z-10 grid h-11 min-w-24 flex-1 place-items-center rounded-full px-3"
+        :data-nav-on="tab === index"
         :aria-pressed="tab === index"
         @click="tab = index"
       >
@@ -100,21 +47,35 @@ onUnmounted(() => window.clearTimeout(retryTimer));
       </button>
     </div>
 
-    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    <div class="relative md:hidden">
+      <Transition name="page">
+        <div v-if="activeColumn" :key="activeColumn.source.id">
+          <HeroCard class="mb-4" :board="activeColumn.board" :latest="activeColumn.latest" />
+          <BoardColumn
+            :board="activeColumn.board"
+            :latest="activeColumn.latest"
+            :show-hero="false"
+            :picker-groups="groupsOf(store.catalog, activeColumn.board.platform)"
+            @pick="setKey(activeColumn.source.id, $event)"
+            @reorder="(key, beforeKey) => store.reorderCatalogChart(activeColumn.board.platform, key, beforeKey)"
+          />
+        </div>
+      </Transition>
+    </div>
+
+    <div class="hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-3">
       <HeroCard
-        v-for="(column, index) in columns"
+        v-for="column in columns"
         :key="`hero:${column.source.id}`"
-        :class="tab === index ? '' : 'hidden md:block'"
         :board="column.board"
         :latest="column.latest"
       />
     </div>
 
-    <div class="mt-6 grid gap-8 md:grid-cols-2 lg:grid-cols-3">
+    <div class="mt-6 hidden gap-8 md:grid md:grid-cols-2 lg:grid-cols-3">
       <BoardColumn
-        v-for="(column, index) in columns"
+        v-for="column in columns"
         :key="`list:${column.source.id}`"
-        :class="tab === index ? '' : 'hidden md:block'"
         :board="column.board"
         :latest="column.latest"
         :show-hero="false"

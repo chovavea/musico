@@ -19,6 +19,7 @@ from app.domain.models import (
     TrackRef,
 )
 from app.download_sources.registry import DownloadSourceRecord, DownloadSourceRegistry
+from app.fallback.sonoma import PreviewClip
 from app.plugins._registry import PluginRecord, PluginRegistry
 from app.services import preview_telemetry
 from app.services.preview_plan import PreviewPlanner, PreviewPolicy, PreviewTarget
@@ -225,6 +226,7 @@ async def client_for(
     handler: Callable[[httpx.Request], httpx.Response],
     *,
     settings: object | None = None,
+    gequbao: object | None = None,
 ) -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
         app = FastAPI()
@@ -236,6 +238,8 @@ async def client_for(
         )
         if settings is not None:
             app.state.settings = settings
+        if gequbao is not None:
+            app.state.gequbao_preview = gequbao
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -263,11 +267,46 @@ async def test_another_platform_official_preview_is_played(
     assert response.content == BODY
     assert search.calls[0].title == QQ.title
     assert official.calls == ["287398"]
-    assert [event.tier for event in events] == ["T2"]
-    assert events[0].status == "ok"
-    assert events[0].source_platform == "netease"
-    assert events[0].source_external_id == "287398"
-    assert events[0].match_score == pytest.approx(0.98)
+    assert [event.tier for event in events] == ["T1", "T2"]
+    assert events[0].status == "error"
+    assert events[0].error == "official_unavailable"
+    assert events[1].status == "ok"
+    assert events[1].source_platform == "netease"
+    assert events[1].source_external_id == "287398"
+    assert events[1].match_score == pytest.approx(0.98)
+
+
+async def test_a_short_cross_platform_preview_falls_back_to_a_complete_download(
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[preview_telemetry.PreviewEvent],
+) -> None:
+    monkeypatch.setattr(
+        preview,
+        "_audio_duration_ms",
+        lambda header: 320_000 if header.startswith(b"fLaC") else 30_000,
+    )
+    search = CrossSearch([candidate("netease")])
+    official = CrossPreview()
+    source = Source("backup")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "music.163.com":
+            return audio(request)
+        return httpx.Response(
+            200, content=b"fLaC-audio", headers={"Content-Type": "audio/flac"}
+        )
+
+    async with client_for(
+        registry_with(search, official), [source_record(source)], handler
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == b"fLaC-audio"
+    assert official.calls == ["287398"]
+    assert source.resolved == 1
+    assert [event.tier for event in events] == ["T1", "T2", "T3"]
+    assert events[1].status == "error"
+    assert events[2].source_platform == "backup"
 
 
 async def test_a_live_variant_is_never_borrowed(
@@ -283,10 +322,11 @@ async def test_a_live_variant_is_never_borrowed(
     # The live edit never plays, but netease still answered the search: the pair
     # must lose a sample so the next click can prefer another platform.
     assert [(event.tier, event.status) for event in events] == [
+        ("T1", "error"),
         ("T2", "error"),
         ("none", "error"),
     ]
-    assert events[0].source_platform == "netease"
+    assert events[1].source_platform == "netease"
 
 
 @pytest.mark.parametrize(
@@ -327,10 +367,10 @@ async def test_unplayable_cross_platform_stream_falls_back_to_download_sources(
     assert response.content == BODY
     assert official.calls == ["287398"]
     assert source.resolved == 1
-    assert [event.tier for event in events] == ["T2", "T3"]
-    assert events[0].status == "error"
-    assert events[0].source_platform == "netease"
-    assert events[1].source_platform == "backup"
+    assert [event.tier for event in events] == ["T1", "T2", "T3"]
+    assert events[1].status == "error"
+    assert events[1].source_platform == "netease"
+    assert events[2].source_platform == "backup"
 
 
 def two_platform_registry(
@@ -382,7 +422,7 @@ async def test_the_next_platform_is_not_asked_once_one_plays(
     assert response.status_code == 200
     assert probe.order == ["netease"]
     assert qq_search.calls == []
-    assert [event.tier for event in events] == ["T2"]
+    assert [event.tier for event in events] == ["T1", "T2"]
 
 
 async def test_a_slow_platform_is_hedged_by_the_next_one(
@@ -434,7 +474,7 @@ async def test_a_slow_platform_is_hedged_by_the_next_one(
     assert response.status_code == 200
     assert "qqmusic" in probe.order
     assert probe.peak == 2
-    assert events[0].source_platform == "qqmusic"
+    assert [event.source_platform for event in events if event.tier == "T2"] == ["qqmusic"]
 
 
 async def test_learned_rate_decides_which_platform_is_asked_first(
@@ -478,7 +518,7 @@ async def test_learned_rate_decides_which_platform_is_asked_first(
     assert response.status_code == 200
     assert probe.order == ["qqmusic"]
     assert netease_search.calls == []
-    assert events[0].source_platform == "qqmusic"
+    assert [event.source_platform for event in events if event.tier == "T2"] == ["qqmusic"]
 
 
 async def test_searches_never_run_at_the_same_time() -> None:
@@ -532,7 +572,7 @@ async def test_a_failed_borrow_is_recorded_for_the_next_ranking(
     async with client_for(registry_with(search, CrossPreview()), [], music_163_only) as client:
         response = await client.get(ENDPOINT, params=PARAMS)
     assert response.status_code == 404
-    failure = events[0]
+    failure = next(event for event in events if event.tier == "T2")
     assert (failure.tier, failure.status, failure.source_platform) == ("T2", "error", "netease")
     assert failure.error == "cross_platform_unavailable"
 
@@ -570,7 +610,12 @@ async def test_a_cache_hit_is_logged_without_becoming_a_new_event(
     async with client_for(registry_with(search, official), [], music_163_only) as client:
         await client.get(ENDPOINT, params=PARAMS)
         await client.get(ENDPOINT, params=PARAMS)
-    assert [(event.tier, event.cached) for event in events] == [("T2", False), ("T2", True)]
+    assert [(event.tier, event.cached) for event in events] == [
+        ("T1", False),
+        ("T2", False),
+        ("T1", False),
+        ("T2", True),
+    ]
 
 
 async def test_a_cached_url_that_stops_opening_is_dropped_and_searched_again() -> None:
@@ -639,8 +684,8 @@ async def test_a_slow_platform_is_abandoned_at_the_deadline_and_download_sources
     assert response.status_code == 200
     assert official.calls == []
     assert source.resolved == 1
-    assert [event.tier for event in events] == ["T2", "T3"]
-    assert events[0].error == "cross_platform_deadline_exceeded"
+    assert [event.tier for event in events] == ["T1", "T2", "T3"]
+    assert events[1].error == "cross_platform_deadline_exceeded"
 
 
 async def test_a_deadline_is_not_remembered_as_unplayable(
@@ -804,3 +849,86 @@ async def test_default_policy_keeps_a_featured_hit_without_duration() -> None:
     targets = await drain(planner)
     assert [target.external_id for target in targets] == ["1888"]
     assert targets[0].match_score == 0.9
+
+
+GEQUBAO_HOST = "kw-er.kuwo.cn"
+GEQUBAO_URL = f"https://{GEQUBAO_HOST}/resource/gequbao.mp3"
+GEQUBAO_BODY = b"ID3" + bytes(13) + b"gequbao-preview"
+
+
+class GequbaoClips:
+    def __init__(self) -> None:
+        self.asked: list[TrackRef] = []
+
+    async def iter_preview_clips(self, track: TrackRef, **_kwargs):
+        self.asked.append(track)
+        yield PreviewClip(
+            url=GEQUBAO_URL,
+            page_url="https://music.example/music/4190",
+            media_type="audio/mpeg",
+            allowed_hosts=("kuwo.cn",),
+            referer="https://music.example/music/4190",
+            source_track_id="/music/4190",
+        )
+
+
+def _hedged_settings(**changes: object) -> SimpleNamespace:
+    values = {
+        "preview_cross_platform": True,
+        "preview_match_min_score": 0.9,
+        "preview_max_candidates": 2,
+        "preview_deadline_sec": 5.0,
+        "preview_negative_ttl_sec": 180.0,
+        "preview_positive_ttl_sec": 600.0,
+        "preview_hedge_enabled": True,
+        "preview_hedge_min_delay_sec": 0.05,
+        "preview_hedge_max_delay_sec": 0.05,
+    }
+    values.update(changes)
+    return SimpleNamespace(**values)
+
+
+def _t2_and_clip_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.host == "music.163.com":
+        return audio(request)
+    if request.url.host == GEQUBAO_HOST:
+        return httpx.Response(
+            200, content=GEQUBAO_BODY, headers={"Content-Type": "audio/mpeg"}
+        )
+    return httpx.Response(404)
+
+
+async def test_a_faster_clip_does_not_replace_an_in_flight_cross_platform_preview() -> None:
+    search = CrossSearch([candidate("netease")], delay_sec=0.25)
+    official = CrossPreview()
+    gequbao = GequbaoClips()
+    async with client_for(
+        registry_with(search, official),
+        [],
+        _t2_and_clip_handler,
+        settings=_hedged_settings(),
+        gequbao=gequbao,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == BODY
+    assert official.calls == ["287398"]
+    assert gequbao.asked == [QQ]
+
+
+async def test_a_clip_is_already_ready_when_cross_platform_gives_up() -> None:
+    search = CrossSearch([candidate("netease", duration_ms=210_000)], delay_sec=0.25)
+    official = CrossPreview()
+    gequbao = GequbaoClips()
+    async with client_for(
+        registry_with(search, official),
+        [],
+        _t2_and_clip_handler,
+        settings=_hedged_settings(),
+        gequbao=gequbao,
+    ) as client:
+        response = await client.get(ENDPOINT, params=PARAMS)
+    assert response.status_code == 200
+    assert response.content == GEQUBAO_BODY
+    assert official.calls == []
+    assert gequbao.asked == [QQ]

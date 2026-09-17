@@ -54,12 +54,17 @@ after(async () => {
   delete globalThis.document;
 });
 
-test("默认页面样式主题是极简", () => {
+test("默认页面样式主题是简", () => {
   store.init();
 
   assert.equal(store.styleTheme, "minimal");
-  assert.equal(store.styleThemes.length, 1);
-  assert.equal(store.styleThemes[0].name, "极简");
+  assert.equal(store.styleThemes.length, 3);
+  assert.equal(store.styleThemes[0].name, "简");
+  assert.equal(store.styleThemes[1].id, "pulse");
+  assert.equal(store.styleThemes[1].name, "动");
+  assert.equal(store.styleThemes[2].id, "glaze");
+  assert.equal(store.styleThemes[2].name, "炫");
+  assert.equal(store.isPulse, false);
   assert.equal(document.documentElement.dataset.theme, "minimal");
 });
 
@@ -70,11 +75,27 @@ test("选中主题写入 localStorage 并同步到 data-theme", () => {
   assert.equal(localStorage.getItem(STYLE_STORAGE_KEY), "minimal");
   assert.equal(document.documentElement.dataset.theme, "minimal");
 
+  store.setStyleTheme("pulse");
+  assert.equal(store.styleTheme, "pulse");
+  assert.equal(store.isPulse, true);
+  assert.equal(store.isGlaze, false);
+  assert.equal(localStorage.getItem(STYLE_STORAGE_KEY), "pulse");
+  assert.equal(document.documentElement.dataset.theme, "pulse");
+  assert.equal(themeColor, "#fafafa");
+
+  store.setStyleTheme("glaze");
+  assert.equal(store.styleTheme, "glaze");
+  assert.equal(store.isGlaze, true);
+  assert.equal(store.isPulse, false);
+  assert.equal(localStorage.getItem(STYLE_STORAGE_KEY), "glaze");
+  assert.equal(document.documentElement.dataset.theme, "glaze");
+  assert.equal(themeColor, "#eef4fb");
+
   store.init();
-  assert.equal(store.styleTheme, "minimal");
+  assert.equal(store.styleTheme, "glaze");
 });
 
-test("未知主题值回退到极简并清掉脏数据", () => {
+test("未知主题值回退到简并清掉脏数据", () => {
   localStorage.setItem(STYLE_STORAGE_KEY, "neon");
   store.init();
 

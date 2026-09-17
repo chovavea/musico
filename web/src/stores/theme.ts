@@ -3,7 +3,11 @@ import { defineStore } from "pinia";
 const STORAGE_KEY = "musico-theme";
 const STYLE_STORAGE_KEY = "musico-style-theme";
 
-export const STYLE_THEMES = [{ id: "minimal", name: "极简" }] as const;
+export const STYLE_THEMES = [
+  { id: "minimal", name: "简" },
+  { id: "pulse", name: "动" },
+  { id: "glaze", name: "炫" },
+] as const;
 export type StyleThemeId = (typeof STYLE_THEMES)[number]["id"];
 const DEFAULT_STYLE_THEME: StyleThemeId = "minimal";
 
@@ -27,10 +31,15 @@ function readStoredStyleTheme(): StyleThemeId | null {
   return isStyleThemeId(saved) ? saved : null;
 }
 
-function updateThemeColor(dark: boolean): void {
+function themeColor(dark: boolean, style: StyleThemeId): string {
+  if (style === "glaze") return dark ? "#070b14" : "#eef4fb";
+  return dark ? "#09090b" : "#fafafa";
+}
+
+function updateThemeColor(dark: boolean, style: StyleThemeId): void {
   document
     .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-    ?.setAttribute("content", dark ? "#09090b" : "#fafafa");
+    ?.setAttribute("content", themeColor(dark, style));
 }
 
 export const useThemeStore = defineStore("theme", {
@@ -42,15 +51,18 @@ export const useThemeStore = defineStore("theme", {
   }),
   getters: {
     styleThemes: () => STYLE_THEMES,
+    isGlaze: (state) => state.styleTheme === "glaze",
+    isPulse: (state) => state.styleTheme === "pulse",
   },
   actions: {
     apply(persist = true) {
       document.documentElement.classList.toggle("dark", this.dark);
-      updateThemeColor(this.dark);
+      updateThemeColor(this.dark, this.styleTheme);
       if (persist) localStorage.setItem(STORAGE_KEY, this.dark ? "dark" : "light");
     },
     applyStyle(persist = true) {
       document.documentElement.dataset.theme = this.styleTheme;
+      updateThemeColor(this.dark, this.styleTheme);
       if (persist) localStorage.setItem(STYLE_STORAGE_KEY, this.styleTheme);
     },
     toggle() {
@@ -76,7 +88,7 @@ export const useThemeStore = defineStore("theme", {
       this.preference = stored == null ? "system" : stored ? "dark" : "light";
       this.dark = stored ?? systemPrefersDark();
       document.documentElement.classList.toggle("dark", this.dark);
-      updateThemeColor(this.dark);
+      updateThemeColor(this.dark, this.styleTheme);
       const storedStyle = readStoredStyleTheme();
       this.styleTheme = storedStyle ?? DEFAULT_STYLE_THEME;
       if (storedStyle == null) localStorage.removeItem(STYLE_STORAGE_KEY);

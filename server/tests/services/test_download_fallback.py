@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -10,13 +11,20 @@ from app.adapters.persistence.library_repository import LibraryRepository, _fall
 from app.adapters.persistence.models import DownloadTaskRow, FallbackEventRow, LibraryTrackRow
 from app.domain.models import TrackRef
 from app.fallback.service import FallbackService
-from app.fallback.sonoma import FallbackLink, SonomaFallback, _quark_share_url, _song_hits
+from app.fallback.sonoma import (
+    FallbackLink,
+    SonomaFallback,
+    _playlist_audio_url,
+    _quark_share_url,
+    _song_hits,
+)
 from app.settings import Settings
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 BASE_URL = "https://mirror.example"
-SEARCH_URL = f"{BASE_URL}/index/search/?keyword=%E7%A8%BB%E9%A6%99"
+SEARCH_URL = f"{BASE_URL}/index/search/?keyword={quote('稻香 周杰伦', safe='')}"
+SEARCH_TITLE_URL = f"{BASE_URL}/index/search/?keyword={quote('稻香', safe='')}"
 
 SEARCH_HTML = """
 <ul>
@@ -45,6 +53,11 @@ SONG_HTML = """
   </a>
 </div>
 <h4>大小： 37.59 MB</h4>
+<script>
+var playlist = [
+{title:"若无法试听请刷新",artist:"",mp3:"https://online-playback-public-service.163music-playerapi.sbs/a031f98f4a963247e6b70bd6a08baaa6/resource/6511926283.ogg",cover:"/resource/images/playpic.gif",},
+];
+</script>
 """
 
 SONG_HTML_MP3_ONLY = """
@@ -83,6 +96,27 @@ TWO_HIT_SEARCH_HTML = """
 </ul>
 """
 
+HAIYU_SEARCH_HTML = """
+<ul>
+  <li>
+    <article>
+      <a href="/song/hai-yu-ni.html" rel="bookmark"  title="马也_Crabbit_《海屿你》MP3下载" >
+      <h3>海屿你-马也_Crabbit</h3>
+      <p><small>
+        <span class="tagstyle2 f-10 f-nob">WAV</span>
+      </small></p>
+      </a>
+    </article>
+  </li>
+</ul>
+"""
+
+HAIYU_SONG_HTML = SONG_HTML.replace("稻香 周杰伦WAV", "海屿你 马也 WAV")
+HAIYU_COMBINED_URL = (
+    f"{BASE_URL}/index/search/?keyword={quote('海屿你 Cole先生,马也_Crabbit', safe='')}"
+)
+HAIYU_TITLE_URL = f"{BASE_URL}/index/search/?keyword={quote('海屿你', safe='')}"
+
 
 async def _offline_guard(_url: str, _hosts: object) -> None:
     """Every request is served by MockTransport, so skip the real DNS guard."""
@@ -107,6 +141,53 @@ def test_search_parser_ignores_links_without_a_result_heading() -> None:
     assert hits[0].title == "稻香"
     assert hits[0].artist == "周杰伦"
     assert hits[0].label == "WAV"
+
+
+def test_playlist_parser_reads_the_qplayer_listen_clip() -> None:
+    url = _playlist_audio_url(SONG_HTML, ("163music-playerapi.sbs",))
+    assert (
+        url
+        == "https://online-playback-public-service.163music-playerapi.sbs/a031f98f4a963247e6b70bd6a08baaa6/resource/6511926283.ogg"
+    )
+
+
+def test_playlist_parser_rejects_an_off_allowlist_listen_url() -> None:
+    html = SONG_HTML.replace(
+        "online-playback-public-service.163music-playerapi.sbs",
+        "evil.example",
+    )
+    assert _playlist_audio_url(html, ("163music-playerapi.sbs",)) is None
+    loopback = SONG_HTML.replace(
+        "https://online-playback-public-service.163music-playerapi.sbs/a031f98f4a963247e6b70bd6a08baaa6/resource/6511926283.ogg",
+        "https://127.0.0.1/secret.ogg",
+    )
+    assert _playlist_audio_url(loopback, ("163music-playerapi.sbs",)) is None
+    insecure = SONG_HTML.replace("https://", "http://", 1)
+    assert _playlist_audio_url(insecure, ("163music-playerapi.sbs",)) is None
+
+
+@pytest.mark.asyncio
+async def test_preview_clips_stop_at_the_in_page_player_and_skip_quark() -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/index/search/":
+            return httpx.Response(200, text=SEARCH_HTML)
+        if request.url.path == "/song/zhoujielun-dao-xiang.html":
+            return httpx.Response(200, text=SONG_HTML)
+        return httpx.Response(404, text="missing")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        fallback = SonomaFallback(client, BASE_URL, url_guard=_offline_guard)
+        clips = [clip async for clip in fallback.iter_preview_clips(_track())]
+
+    assert [clip.url for clip in clips] == [
+        "https://online-playback-public-service.163music-playerapi.sbs/a031f98f4a963247e6b70bd6a08baaa6/resource/6511926283.ogg"
+    ]
+    assert clips[0].media_type == "audio/ogg"
+    assert clips[0].referer == f"{BASE_URL}/"
+    assert "/dls/rwk192651.html" not in "".join(seen)
 
 
 @pytest.mark.asyncio
@@ -158,6 +239,58 @@ async def test_fallback_reports_not_found_when_the_site_has_no_match() -> None:
     link = await _resolve_with(handler, _track(title="晴天", artist="周杰伦"))
 
     assert link.outcome == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_fallback_retries_title_only_when_title_and_artist_miss() -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/index/search/":
+            keyword = request.url.params.get("keyword")
+            if keyword == "稻香 周杰伦":
+                return httpx.Response(200, text="<ul></ul>")
+            if keyword == "稻香":
+                return httpx.Response(200, text=SEARCH_HTML)
+            return httpx.Response(200, text="<ul></ul>")
+        if request.url.path == "/song/zhoujielun-dao-xiang.html":
+            return httpx.Response(200, text=SONG_HTML)
+        if request.url.path == "/dls/rwk192651.html":
+            return httpx.Response(200, text=HANDOFF_HTML)
+        return httpx.Response(404, text="missing")
+
+    link = await _resolve_with(handler)
+
+    assert seen[:2] == [SEARCH_URL, SEARCH_TITLE_URL]
+    assert link.outcome == "jumped"
+    assert link.share_url == "https://pan.quark.cn/s/ef20d65b3f5e"
+
+
+@pytest.mark.asyncio
+async def test_fallback_matches_a_featured_credit_to_the_overlapping_artist() -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/index/search/":
+            keyword = request.url.params.get("keyword")
+            if keyword == "海屿你":
+                return httpx.Response(200, text=HAIYU_SEARCH_HTML)
+            return httpx.Response(200, text="<ul></ul>")
+        if request.url.path == "/song/hai-yu-ni.html":
+            return httpx.Response(200, text=HAIYU_SONG_HTML)
+        if request.url.path == "/dls/rwk192651.html":
+            return httpx.Response(200, text=HANDOFF_HTML)
+        return httpx.Response(404, text="missing")
+
+    link = await _resolve_with(
+        handler, _track(title="海屿你", artist="Cole先生,马也_Crabbit")
+    )
+
+    assert seen[:2] == [HAIYU_COMBINED_URL, HAIYU_TITLE_URL]
+    assert link.outcome == "jumped"
+    assert link.share_url == "https://pan.quark.cn/s/ef20d65b3f5e"
 
 
 @pytest.mark.asyncio
@@ -259,13 +392,18 @@ async def test_fallback_tries_the_next_candidate_when_the_first_handoff_has_no_s
 class _Session:
     """Minimal stand-in for AsyncSession: the repository only gets/adds/commits."""
 
-    def __init__(self, task: Any, track: Any) -> None:
+    def __init__(self, task: Any, track: Any, *, fail_after: int | None = None) -> None:
         self.task = task
         self.track = track
         self.added: list[Any] = []
         self.commits = 0
+        self.gets = 0
+        self.fail_after = fail_after
 
     async def get(self, model: Any, _key: Any) -> Any:
+        self.gets += 1
+        if self.fail_after and self.gets >= self.fail_after and model is DownloadTaskRow:
+            self.task.status = "failed"
         return self.task if model is DownloadTaskRow else self.track
 
     def add(self, row: Any) -> None:
@@ -334,6 +472,7 @@ async def test_service_never_resolves_a_task_that_did_not_fail() -> None:
             client,
             Settings(fallback_base_url=""),
             resolver=resolver,
+            wait_active_sec=0,
         )
         result = await service.resolve_task("task-2")
 
@@ -341,6 +480,34 @@ async def test_service_never_resolves_a_task_that_did_not_fail() -> None:
     assert result["outcome"] == "not_failed"
     assert resolver.calls == 0
     assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_service_waits_out_an_in_flight_download_before_fallback() -> None:
+    task = DownloadTaskRow(id="task-3", library_track_id="track-3", status="queued")
+    session = _Session(
+        task,
+        LibraryTrackRow(id="track-3", title="泪海", artist="许茹芸"),
+        fail_after=2,
+    )
+    resolver = _Resolver(
+        FallbackLink(outcome="jumped", share_url="https://pan.quark.cn/s/tears")
+    )
+    async with httpx.AsyncClient() as client:
+        service = FallbackService(
+            lambda: session,  # type: ignore[arg-type]
+            client,
+            Settings(fallback_base_url=""),
+            resolver=resolver,
+            wait_active_sec=1.0,
+        )
+        result = await service.resolve_task("task-3")
+
+    assert result is not None
+    assert result["outcome"] == "jumped"
+    assert result["url"] == "https://pan.quark.cn/s/tears"
+    assert resolver.calls == 1
+    assert session.gets >= 2
 
 
 @pytest.mark.asyncio
@@ -469,6 +636,7 @@ def test_health_reports_the_fallback_without_moving_status() -> None:
     assert body["code"] == 0
     assert body["data"]["status"] == "ready"
     assert body["data"]["fallback"]["source_name"] == "Sonoma"
+    assert body["data"]["download_sources"] == []
 
 
 def _event(

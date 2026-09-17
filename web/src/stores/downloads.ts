@@ -231,7 +231,11 @@ export const useDownloadsStore = defineStore("downloads", {
               ? { status: "ready", assetId: asset.id, trackId: asset.track_id }
               : { status: "ready", taskId: task.id };
           } else if (task.status === "failed") {
-            delete this.localStates[key];
+            if (!this.failedIds[task.id] || this.fallbackPending[task.id]) {
+              this.localStates[key] = { status: "queued", taskId: task.id };
+            } else {
+              delete this.localStates[key];
+            }
           } else if (ACTIVE_STATUSES.includes(task.status)) {
             this.localStates[key] = { status: "queued", taskId: task.id };
           }
@@ -319,6 +323,9 @@ export const useDownloadsStore = defineStore("downloads", {
         return false;
       } finally {
         delete this.fallbackPending[taskId];
+        for (const [key, local] of Object.entries(this.localStates)) {
+          if (local.taskId === taskId) delete this.localStates[key];
+        }
       }
     },
     async remove(id: string) {

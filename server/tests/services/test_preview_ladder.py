@@ -16,11 +16,12 @@ def source(
     *,
     kind: SourceKind = SourceKind.CLIP,
     order_index: int = 0,
+    tier: str | None = None,
 ) -> PreviewSource:
     return PreviewSource(
         source_id=source_id,
         kind=kind,
-        tier="T4",
+        tier=tier or ("T3" if kind is SourceKind.DOWNLOAD else "T4"),
         order_index=order_index,
     )
 
@@ -88,15 +89,47 @@ def test_ucb_bonus_keeps_an_untried_source_observable() -> None:
     )
 
 
-def test_categories_cannot_be_ranked_against_each_other() -> None:
-    with pytest.raises(ValueError, match="categories"):
-        order_sources(
-            [
-                source("official", kind=SourceKind.CROSS_OFFICIAL),
-                source("clip", kind=SourceKind.CLIP),
-            ],
-            "origin",
-        )
+def test_a_fast_clip_can_outrank_a_slow_download_source() -> None:
+    rates = RateStore(min_samples=1)
+    for _ in range(4):
+        rates.record("origin", "download:ventura", False, latency_ms=1_700)
+        rates.record("origin", "clip:gequbao", True, latency_ms=1_000)
+
+    ordered = order_sources(
+        [
+            source("ventura", kind=SourceKind.DOWNLOAD, order_index=0),
+            source("gequbao", kind=SourceKind.CLIP, order_index=1),
+        ],
+        "origin",
+        rates=rates,
+    )
+
+    assert [item.source_id for item in ordered] == ["gequbao", "ventura"]
+
+
+def test_cold_start_expected_cost_puts_clips_ahead_of_download_sources() -> None:
+    rates = RateStore()
+    ordered = order_sources(
+        [
+            source("ventura", kind=SourceKind.DOWNLOAD, order_index=0),
+            source("gequbao", kind=SourceKind.CLIP, order_index=1),
+        ],
+        "origin",
+        rates=rates,
+    )
+    assert [item.source_id for item in ordered] == ["gequbao", "ventura"]
+
+
+def test_disabling_adaptive_order_keeps_the_ladder_index() -> None:
+    ordered = order_sources(
+        [
+            source("gequbao", kind=SourceKind.CLIP, order_index=1),
+            source("ventura", kind=SourceKind.DOWNLOAD, order_index=0),
+        ],
+        "origin",
+        adaptive=False,
+    )
+    assert [item.source_id for item in ordered] == ["ventura", "gequbao"]
 
 
 def test_legacy_t5_and_t6_events_share_the_t4_clip_namespace() -> None:

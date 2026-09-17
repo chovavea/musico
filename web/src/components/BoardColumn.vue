@@ -77,7 +77,7 @@ const staleLabel = computed(() => {
     <HeroCard v-if="showHero" :board="board" :latest="latest" class="mb-4" />
     <div class="mb-3 flex items-end justify-between gap-3">
       <div class="min-w-0">
-        <p class="text-xs font-medium text-secondary">{{ platformLabel(board.platform) }}</p>
+        <p class="type-title truncate">{{ platformLabel(board.platform) }}</p>
         <BoardChartPicker
           v-if="pickerGroups?.length && board.chart_key"
           :name="chartShortName(board.name)"
@@ -89,7 +89,7 @@ const staleLabel = computed(() => {
         <RouterLink
           v-else
           :to="`/charts/${board.id}`"
-          class="inline-flex min-h-11 items-center text-lg font-semibold hover:underline"
+          class="inline-flex min-h-11 items-center text-[1.05rem] font-bold tracking-[0.01em] hover:underline"
         >
           {{ chartShortName(board.name) }}
         </RouterLink>
@@ -99,7 +99,7 @@ const staleLabel = computed(() => {
         <button
           v-if="allItems.length"
           type="button"
-          class="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-4 text-sm font-medium text-zinc-600 ring-1 ring-zinc-300 transition hover:bg-zinc-100 hover:text-zinc-900 active:scale-95 dark:text-zinc-300 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white"
+          class="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-4 text-[0.86rem] font-semibold text-zinc-600 ring-1 ring-zinc-300 transition hover:bg-zinc-100 hover:text-zinc-900 active:scale-95 dark:text-zinc-300 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white"
           :aria-label="`播放本榜：${board.name}`"
           :title="`播放本榜：${board.name}`"
           @click="allItems[0] && player.play(allItems[0], allItems)"

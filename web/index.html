@@ -21,7 +21,13 @@
             (saved !== "light" &&
               window.matchMedia("(prefers-color-scheme: dark)").matches);
           document.documentElement.classList.toggle("dark", dark);
-          document.getElementById("theme-color").setAttribute("content", dark ? "#09090b" : "#fafafa");
+          var style = localStorage.getItem("musico-style-theme") || "minimal";
+          document.documentElement.dataset.theme = style;
+          var glaze = style === "glaze";
+          document.getElementById("theme-color").setAttribute(
+            "content",
+            dark ? (glaze ? "#070b14" : "#09090b") : glaze ? "#eef4fb" : "#fafafa",
+          );
         } catch (_) {}
       })();
     </script>

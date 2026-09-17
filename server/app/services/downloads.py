@@ -53,7 +53,10 @@ class DownloadService:
                     max_attempts=max(1, self._settings.download_max_retries),
                     requested_quality=requested_quality,
                 )
-            elif existing.status == "completed" and asset is None:
+            elif existing.status in {"failed", "missing"} or (
+                existing.status == "completed" and asset is None
+            ):
+                # A second download click must retry, not replay the last failure.
                 await repo.reset_task(existing)
             await session.commit()
             return {
