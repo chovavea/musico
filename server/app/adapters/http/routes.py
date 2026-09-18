@@ -351,10 +351,13 @@ def build_router() -> APIRouter:
         asset, path, track = resolved
         if not path.is_file():
             return Response(status_code=404)
+        # Inline: the player streams this URL inside <audio>; only the
+        # /download route below should make the browser save the file.
         return FileResponse(
             path,
             media_type=_audio_media_type(asset.format),
             filename=_download_filename(track, asset.format, inline=True),
+            content_disposition_type="inline",
         )
 
     @router.get("/library/{asset_id}/download")

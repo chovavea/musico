@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from app.adapters.http.routes import build_router
@@ -16,7 +17,28 @@ class _RecordingService:
         return []
 
 
-def _client(service: _RecordingService) -> TestClient:
+class _Asset:
+    format = "flac"
+
+
+class _Track:
+    title = "夜曲"
+    artist = "周杰伦"
+
+
+class _AssetService:
+    """Stand-in for DownloadService.asset() that resolves one library file."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    async def asset(self, asset_id: str) -> tuple[Any, Path, Any] | None:
+        if asset_id != "asset-1":
+            return None
+        return _Asset(), self._path, _Track()
+
+
+def _client(service: Any) -> TestClient:
     app = FastAPI()
     app.include_router(build_router())
     app.state.download_service = service
@@ -52,3 +74,19 @@ def test_download_history_rejects_an_absurd_page_size() -> None:
 
     assert response.status_code == 422
     assert service.calls == []
+
+
+def test_library_stream_is_inline_while_download_is_an_attachment(tmp_path: Path) -> None:
+    audio = tmp_path / "song.flac"
+    audio.write_bytes(b"fLaC" + b"\x00" * 64)
+    service = _AssetService(audio)
+
+    with _client(service) as client:
+        stream = client.get("/api/v1/library/asset-1/stream")
+        download = client.get("/api/v1/library/asset-1/download")
+
+    assert stream.status_code == 200
+    assert download.status_code == 200
+    # <audio src> plays the stream URL in place; the download route saves it.
+    assert stream.headers["content-disposition"].startswith("inline;")
+    assert download.headers["content-disposition"].startswith("attachment;")
