@@ -187,7 +187,9 @@ async function openPicker(focus: "search" | "first" | "last" | "current" = "sear
   }
 }
 
-async function closePicker(restoreTrigger = false, keyboard = false) {
+// keyboard：键盘激活的选项目前与鼠标点击走同一条路径（都回到 trigger），
+// 参数保留以标注调用意图，尚未影响行为。
+async function closePicker(restoreTrigger = false, _keyboard = false) {
   cancelDrag();
   open.value = false;
   query.value = "";
@@ -353,12 +355,14 @@ function onHandleTouchStart(event: TouchEvent) {
   if (!chart?.playable) return;
   const touch = event.touches[0];
   preventIfPossible(event);
-  if (pending) {
-    pending.identifier = touch.identifier;
+  const active = pending;
+  if (active) {
+    active.identifier = touch.identifier;
     return;
   }
   beginPending(chart, row, touch.clientX, touch.clientY, true, -1, touch.identifier);
-  if (pending) pending.row = handle;
+  const started = pending;
+  if (started) started.row = handle;
 }
 
 function bindTouchWindow() {
@@ -401,7 +405,9 @@ function activateLift(chart: CatalogChart, clientY: number) {
   insertAt.value = visibleCharts.value.findIndex((item) => item.key === chart.key);
   moved.value = false;
   paintGhost(clientY - pending.grabY);
-  void nextTick(() => paintGhost(clientY - pending.grabY));
+  void nextTick(() => {
+    if (pending) paintGhost(clientY - pending.grabY);
+  });
   try {
     navigator.vibrate?.(12);
   } catch {

@@ -10,10 +10,12 @@ import {
   resolveDownloadFallback,
   searchTracks,
   setApiToken,
+  syncApiTokenCookie,
 } from "../src/api.ts";
 
 const originalFetch = globalThis.fetch;
 const originalLocalStorage = globalThis.localStorage;
+const originalDocument = globalThis.document;
 
 function stubStorage() {
   const items = new Map();
@@ -30,6 +32,7 @@ afterEach(() => {
   cancelFullSearch();
   globalThis.fetch = originalFetch;
   globalThis.localStorage = originalLocalStorage;
+  globalThis.document = originalDocument;
   globalThis.setTimeout = originalSetTimeout;
 });
 
@@ -204,6 +207,29 @@ test("the token gate 401 explains where to set the token", async () => {
   assert.equal(response.code, 40101);
   assert.match(response.msg, /配置/);
   assert.doesNotMatch(response.msg, /unauthorized/);
+});
+
+test("the stored token is mirrored into a same-site cookie for media URLs", () => {
+  globalThis.localStorage = stubStorage();
+  const cookies = [];
+  globalThis.document = {
+    set cookie(value) {
+      cookies.push(value);
+    },
+    get cookie() {
+      return "";
+    },
+  };
+
+  setApiToken("stored-token");
+  assert.match(cookies.at(-1), /^musico_api_token=stored-token; path=\/; SameSite=Strict$/);
+
+  // 应用启动时补一次 Cookie：会话级 Cookie 会因为重启浏览器消失。
+  syncApiTokenCookie();
+  assert.equal(cookies.at(-1), cookies.at(-2));
+
+  setApiToken("  ");
+  assert.match(cookies.at(-1), /^musico_api_token=; path=\/; SameSite=Strict; Max-Age=0$/);
 });
 
 test("the download fallback is given far more than the default request timeout", async () => {

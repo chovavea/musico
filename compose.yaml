@@ -1,21 +1,34 @@
+# 这份测试栈用独立项目名：deploy/compose.yaml 的正式栈叫 `musico`，若这里沿用
+# 目录名（同样是 musico），两个栈会共用容器/网络命名空间 —— 在仓库根目录执行
+# `docker compose down` 会把正式栈一起停掉，服务别名 `postgres` 也会互相串。
+name: musico-dev
+
 services:
   musico:
     build: .
     # 测试/开发专用镜像标签：正式镜像 musico:latest 由部署目录单独构建，
     # 两者互不覆盖，端口也用 8090 与正式栈的 8080 错开。
-    image: music:evolve
+    image: musico:evolve
     # Application settings live in .env only; compose keeps just the values that
     # describe the container itself (service DNS, in-container paths, timezone).
     # Anything added to .env is picked up here without touching this file.
     env_file:
       - path: .env
         required: false
-    ports: ["8090:8080"]
+    # 只绑本机：API_TOKEN 为空时曲库列表与曲库文件下载不需要令牌，绑到所有
+    # 网卡等于把整份曲库共享给同网段。要从别的机器访问就改成 "8090:8080"，
+    # 并同时设置 API_TOKEN（最好再在前面加一层反向代理认证）。
+    ports: ["127.0.0.1:8090:8080"]
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      ENABLE_MEDIA_RESOLVER: "false"
-      LOG_LEVEL: INFO
-      STALENESS_MULTIPLIER: "2"
+      # 数据库地址按字段交给 settings.py 拼装，而不是在这里拼 URL 字符串：
+      # 密码里的 @ : / # 会被正确转义。DATABASE_URL 显式置空，免得到 .env 里
+      # 给本机开发用的 127.0.0.1 被带进容器。
+      DATABASE_URL: ""
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_NAME: ${POSTGRES_DB}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: Asia/Shanghai
       API_TOKEN: ${API_TOKEN:-}
       BOARDS_YAML: /app/configs/boards.yaml
@@ -37,10 +50,12 @@ services:
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/platforms', timeout=2)",
         ]
-      interval: 5s
+      # 每 5 秒起一个 Python 解释器做一次健康检查（720 次/小时）在低配设备上
+      # 是纯开销；这个健康状态只给人看（没有服务依赖它），30 秒足够。
+      interval: 30s
       timeout: 3s
-      retries: 20
-      start_period: 20s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
   postgres:
     image: postgres:16-alpine

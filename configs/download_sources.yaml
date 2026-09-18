@@ -1,10 +1,21 @@
 # Which download sources are enabled, and in what order.
 #
 # This file is the single place where the download-source environment
-# variables are declared: `config.base_url_env` / `config.cookie_env` /
-# `config.hosts_env` each name an environment variable, and the real values
-# are filled in the untracked .env.  Nothing else in the repository names
-# them, so swapping a site only means editing this file plus .env.
+# variables are declared: `config.base_url_env` / `config.hosts_env` each
+# name an environment variable, and the real values are filled in the
+# untracked .env.  Nothing else in the repository names them, so swapping a
+# site only means editing this file plus .env.
+#
+# 一个源可以声明的字段（这里只写变量名，值填在 .env）：
+#   base_url_env: 站点地址。取不到就跳过该源并记 download_source_missing_base_url
+#   hosts_env:    逗号分隔的额外放行主机（例如直链/CDN 落在别的域名）
+# 例：
+#   - id: example
+#     enabled: false
+#     priority: 10
+#     config:
+#       base_url_env: MUSICO_DL_EXAMPLE_BASE_URL
+#       hosts_env: MUSICO_DL_EXAMPLE_EXTRA_HOSTS
 #
 # A source whose base_url_env has no value is skipped with a
 # download_source_missing_base_url warning; the other sources keep working.

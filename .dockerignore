@@ -2,15 +2,28 @@
 .tmp
 tmp
 .env
+.DS_Store
+# 依赖/虚拟环境：只有 **/.venv 会漏掉 .venv-build、.venv-py312 之类的副本，
+# 它们各有几十 MB，全部会进构建上下文。
+.venv*
+**/.venv*
 **/.venv
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
+**/.coverage
+**/htmlcov
 web/node_modules
 web/dist
 server/*.egg-info
+# 音乐库与本地数据库：几 GB 的音频和 postgres 数据目录不该进构建上下文。
+data/
+# 打包产物与部署目录不属于镜像内容。
+deploy/
+*.tar
+*.tar.gz
 实施方案.md
 *.md
 !README.md

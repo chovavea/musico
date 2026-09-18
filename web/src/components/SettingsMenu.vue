@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
+import { getApiToken, setApiToken } from "../api";
 import { downloadErrorLabel } from "../lib/status-labels";
 import { useHealthStore } from "../stores/health";
 import { useThemeStore, type StyleThemeId } from "../stores/theme";
@@ -21,6 +22,9 @@ const route = useRoute();
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
 const trigger = ref<HTMLButtonElement | null>(null);
+const apiToken = ref("");
+const tokenSaved = ref(false);
+let tokenSavedTimer = 0;
 
 const statusLabel = computed(() => {
   if (health.error) return "异常";
@@ -65,9 +69,24 @@ function chooseStyle(id: StyleThemeId) {
   theme.setStyleTheme(id);
 }
 
+function loadApiToken() {
+  apiToken.value = getApiToken();
+}
+
+function saveApiToken() {
+  setApiToken(apiToken.value);
+  apiToken.value = getApiToken();
+  tokenSaved.value = true;
+  window.clearTimeout(tokenSavedTimer);
+  tokenSavedTimer = window.setTimeout(() => {
+    tokenSaved.value = false;
+  }, 2000);
+}
+
 function toggle() {
   open.value = !open.value;
   if (open.value) {
+    loadApiToken();
     // 空闲时轮询已停止；打开菜单时刷新一次任务/曲库计数。
     void downloads.refreshSummary();
     if (!downloads.libraryLoaded) void downloads.loadLibrary();
@@ -77,6 +96,7 @@ function toggle() {
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onDocKey);
+  loadApiToken();
   void downloads.refreshSummary();
   if (!downloads.libraryLoaded) void downloads.loadLibrary();
   downloads.startPolling();
@@ -84,6 +104,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onDocKey);
+  window.clearTimeout(tokenSavedTimer);
   downloads.stopPolling();
 });
 </script>
@@ -256,6 +277,27 @@ onUnmounted(() => {
             {{ item.name }}
           </button>
         </div>
+      </div>
+      <div class="flex h-11 items-center gap-2 px-2">
+        <label class="shrink-0 text-sm" for="settings-api-token">令牌</label>
+        <input
+          id="settings-api-token"
+          v-model="apiToken"
+          type="password"
+          class="ml-auto h-8 w-28 min-w-0 rounded-lg bg-zinc-100 px-2 text-xs outline-none focus:ring-1 focus:ring-zinc-400 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:ring-white/20"
+          placeholder="API_TOKEN"
+          autocomplete="off"
+          title="与 .env 里的 API_TOKEN 相同：写操作、曲库与下载记录都需要它"
+          @keydown.enter.prevent="saveApiToken()"
+        />
+        <button
+          type="button"
+          class="h-8 shrink-0 rounded-lg bg-zinc-100 px-2 text-xs hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+          :aria-label="tokenSaved ? '已保存 API Token' : '保存 API Token'"
+          @click="saveApiToken()"
+        >
+          {{ tokenSaved ? "已保存" : "保存" }}
+        </button>
       </div>
       <div class="mx-2 h-px bg-zinc-100 dark:bg-white/10" role="separator" />
       <RouterLink

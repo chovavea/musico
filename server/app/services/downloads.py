@@ -94,9 +94,9 @@ class DownloadService:
         async with self._session_factory() as session:
             return await LibraryRepository(session).list_assets()
 
-    async def tasks(self) -> list[dict[str, Any]]:
+    async def tasks(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
-            return await LibraryRepository(session).list_tasks()
+            return await LibraryRepository(session).list_tasks(limit, offset)
 
     async def task(self, task_id: str) -> dict[str, Any] | None:
         async with self._session_factory() as session:

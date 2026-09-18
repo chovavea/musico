@@ -2,7 +2,7 @@
 
 自托管音乐热榜：QQ 音乐热歌榜 + 网易云热歌榜 + 哔哩哔哩音乐热歌榜 + 酷狗音乐榜 + 酷我音乐榜，并支持通过独立下载源插件保存高规格音频到本地音乐库。下载源只使用其公开、授权的页面或直链，不绕过 DRM 或第三方访问限制。
 
-改 `configs/boards.yaml`（含 `interval_sec`）后必须**重启容器**，调度间隔不会热更新。
+改 `configs/boards.yaml`（含 `interval_sec`）后必须**重启容器**，调度间隔不会热更新。总览页要求 enabled 的榜单里恰好各有一个 `overview_slot: left` 和一个 `right`：把带槽位的榜单改成 `enabled: false` 会让启动直接失败（报 `enabled overview_slot must contain exactly left and right`）。
 
 ## 启动
 
@@ -15,7 +15,7 @@ docker compose up -d --build
 
 应用同时支持 Docker 的 `<ALIAS>_FILE` 约定（`server/app/settings.py` 的 `apply_file_env`）：`DATABASE_PASSWORD_FILE`、`API_TOKEN_FILE` 这类变量指向一个挂载进来的文件即可，值不进容器环境（也不会出现在 `docker inspect`）；文件不可读或为空会直接启动失败，而不是静默回退默认值。数据库连接可以给整条 `DATABASE_URL`，也可以只给 `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_USER` / `DATABASE_NAME` 加 `DATABASE_PASSWORD_FILE`，口令文件优先就靠后者；显式 `DATABASE_URL` 或 `DATABASE_HOST` 永远优先，`POSTGRES_*` 只在两者都缺失时拼一个本机地址。
 
-仓库这份 `compose.yaml` 起的是**测试栈**：镜像标签 `music:evolve`，宿主端口 `8090`，测试库数据在项目内 `./data/postgres`、从宿主访问用 `127.0.0.1:5433`（正式栈占用 8080 / 5432，镜像 `musico:latest` 由部署目录单独构建，两者互不覆盖）。应用镜像目标 < 200MB（Alpine 多阶段）。若 `docker compose` 拉官方镜像超时，可先从镜像站拉取再打官方 tag，例如：
+仓库这份 `compose.yaml` 起的是**测试栈**：镜像标签 `musico:evolve`，宿主端口 `127.0.0.1:8090`（只绑本机 —— `API_TOKEN` 为空时曲库列表和曲库文件下载不需要令牌，绑到所有网卡等于把整份曲库共享给同网段；要从别的机器访问就改成 `"8090:8080"`，并同时设置 `API_TOKEN`），测试库数据在项目内 `./data/postgres`、从宿主访问用 `127.0.0.1:5433`（正式栈占用 8080 / 5432，镜像 `musico:latest` 由部署目录单独构建，两者互不覆盖）。应用镜像目标 < 200MB（Alpine 多阶段），容器以非 root（uid 1000）运行。若 `docker compose` 拉官方镜像超时，可先从镜像站拉取再打官方 tag，例如：
 
 ```bash
 docker pull docker.m.daocloud.io/library/python:3.12-alpine
@@ -23,6 +23,8 @@ docker tag docker.m.daocloud.io/library/python:3.12-alpine python:3.12-alpine
 ```
 
 约 30 秒内完成建表；首次拉榜后 `GET /api/v1/health` 的 `data.status` 为 `ready`（各 enabled 榜至少一条成功快照）。打开 http://127.0.0.1:8090 。
+
+容器内的连接串不在这里拼：`compose.yaml` 传的是 `DATABASE_HOST` / `DATABASE_PASSWORD` 这些字段，由 `server/app/settings.py` 组装并做 URL 转义，所以 `.env` 里的密码包含 `@` `:` `/` `#` 也不会把连接串拼坏；`DATABASE_URL` 在容器里被显式置空，避免本机开发用的 `127.0.0.1` 被带进去。
 
 ## 搜索
 
@@ -68,13 +70,36 @@ npm install
 npm run dev
 ```
 
+本机直接跑不需要设置 `MUSIC_LIBRARY_DIR` / `BOARDS_YAML` / `DOWNLOAD_SOURCE_CONFIG`：它们的默认值指向仓库内的 `data/music` 与 `configs/`（镜像里 `settings.py` 的 `_REPO_ROOT` 就是 `/app`，同一份代码两边都对）。但 `.env` 里的 `DATABASE_URL` 要指向 `127.0.0.1:5433`——宿主 5432 是正式栈的 Postgres。
+
 改动 `web/src` 后要么走 `npm run dev`（Vite 开发服务器，`/api` 默认代理到 `127.0.0.1:8090`），要么先在 `web/` 里跑一次 `npm run build`：直接打开后端端口时端的是 `web/dist` 里的构建产物，不重新构建就会看到旧界面。
+
+## 生产打包
+
+正式栈（`deploy/`）用不带源码的镜像，流程是「本机构建 → 打包 → 目标机器 load」：
+
+```bash
+# 1. 构建正式镜像（Python 运行环境 + 前端静态资源）
+docker build -t musico:latest .
+
+# 2. 连数据库镜像一起导出；docker load 能直接读 gzip 过的 tar
+mkdir -p deploy
+docker save musico:latest postgres:16-alpine | gzip > deploy/musico-stack.tar.gz
+
+# 3. 目标机器（把 deploy/ 拷过去后在目录里执行：env_file 与卷都相对该目录）
+cd deploy
+docker load -i musico-stack.tar.gz
+cp .env.example .env   # 改 POSTGRES_PASSWORD、设置 API_TOKEN
+docker compose up -d   # 打开 http://<主机>:8080
+```
+
+`deploy/compose.yaml` 没有 `build:`（`pull_policy: missing`），所以目标机器上不需要源码；音乐库落在 `./data/music`，数据库落在具名卷 `musico_postgres_data`。
 
 ## 下载源插件
 
-下载源位于 `server/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态与优先级写在 `configs/download_sources.yaml`，修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。**下载源站点地址不进仓库**：环境变量名集中声明在 `configs/download_sources.yaml` 一处的 `config.base_url_env` / `config.cookie_env` / `config.hosts_env`（只写变量名，不写地址），真实地址、Cookie 和额外放行的落地域名填在本地 `.env`（或容器环境）里。插件侧只用 `requires_base_url` 声明自己需不需要地址，不再出现任何变量名。某个源取不到地址时会跳过该源并记 `download_source_missing_base_url` 日志，其余源不受影响；`hosts_env` 是逗号分隔的额外允许主机。
+下载源位于 `server/app/download_sources/`，通过 `plugin.toml` 声明入口和允许的主机。启用状态与优先级写在 `configs/download_sources.yaml`，修改后重启 musico 生效；外部插件目录可通过 `DOWNLOAD_SOURCE_DIRS` 挂载。**下载源站点地址不进仓库**：环境变量名集中声明在 `configs/download_sources.yaml` 一处的 `config.base_url_env` / `config.hosts_env`（只写变量名，不写地址），真实地址和额外放行的落地域名填在本地 `.env`（或容器环境）里。插件侧只用 `requires_base_url` 声明自己需不需要地址，不再出现任何变量名。某个源取不到地址时会跳过该源并记 `download_source_missing_base_url` 日志，其余源不受影响；`hosts_env` 是逗号分隔的额外允许主机。
 
-内置下载源目前只有 `ventura`。经 `config.cookie_env` 声明需要授权会话的源，其 Cookie 由该环境变量提供（变量名见 `configs/download_sources.yaml`）；不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge。没有有效会话或站点限制匿名访问时，源应把搜索/解析失败交给下载源回退链路处理，不阻断其他源。
+内置下载源目前只有 `ventura`，它不需要任何 Cookie。自定义源若需要授权会话，请自行在插件内部读取自己的环境变量（变量名同样只写在 `configs/download_sources.yaml` 的 `config:` 块里，值留在 `.env`）：仓库只实现 `base_url_env` / `hosts_env` 两个间接入口，没有 `cookie_env`。不要把真实 Cookie 写入仓库，也不要在代码中实现或复现站点的反爬 Challenge。没有有效会话或站点限制匿名访问时，源应把搜索/解析失败交给下载源回退链路处理，不阻断其他源。
 
 核心负责歌曲匹配、三种允许下载格式（FLAC / WAV / DSF）的质量排序与降级、单任务队列、重试、断点续传、SHA-256 校验和文件入库。多个下载源按照 `configs/download_sources.yaml` 中的 `priority` 从高到低串行检索；候选池再按实际下载质量从高到低排序，同质量时优先使用源 `priority` 高者。未指定 `requested_quality` 时，优先尝试最高质量，下载失败后按候选质量依次降级；指定了格式或采样维度时只匹配该要求，不跨格式降级。下载源只实现 `search` 和 `resolve`，不直接操作文件。
 
@@ -128,15 +153,19 @@ npm run dev
 ## 安全与暴露边界
 
 - **下载与试听不自动跟随重定向**：下载 worker、官方试听及下载站点试听代理在每次跳转后重新校验主机白名单（来自 `plugin.toml` / 内置后缀表），并拒绝解析到私有、环回或链路本地地址的目标，防止 302 到内网或云元数据地址（SSRF）。跨站跳转时不转发敏感请求头。
-- **可选 API Token**：设置 `API_TOKEN` 后，所有 `POST` / `DELETE` / 其他写操作的 `/api/v1/*` 请求必须携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，否则返回 401。示例：
+- **可选 API Token**：设置 `API_TOKEN` 后，两类请求必须携带 `Authorization: Bearer <token>` 或 `X-API-Token: <token>`，否则返回 401：
+  - 写操作：所有 `POST` / `DELETE` 等非 `GET` 的 `/api/v1/*` 请求；
+  - 会把音频发出去或暴露历史记录的读操作：`/api/v1/library`、`/api/v1/library/{id}/stream`、`/api/v1/library/{id}/download` 与 `/api/v1/downloads*`。
+
+  榜单、目录、搜索、试听、封面代理与 `/api/v1/health` 保持公开，方便整套 UI 放在反向代理后面（由代理认证）。示例：
   ```bash
   curl -X POST http://127.0.0.1:8090/api/v1/downloads \
     -H "Authorization: Bearer $API_TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"platform":"qqmusic","external_id":"xxx","title":"晴天","artist":"周杰伦"}'
   ```
-  **浏览器 UI**：在「配置」菜单里填入同一个 `API_TOKEN`（只存在浏览器本地，写请求会带上 `X-API-Token`）；不填时下载、排序、删除这些写操作会返回 401，页面会提示去「配置」里补令牌。
-  读接口（榜单、健康检查、曲库列表/试听）默认不鉴权；浏览器访问整套 UI 时建议在前面加一层反向代理认证，并仅在内网或本机暴露（默认 `docker compose` 将 `8090` 绑到所有网卡，可改为 `127.0.0.1:8090:8080`）。
+  **浏览器 UI**：在「配置」菜单里填入同一个 `API_TOKEN`（只存在浏览器本地）。播放器与下载链接是 `<audio src>` / `<a href>`，带不了请求头，所以前端在保存令牌时还会写一个 `SameSite=Strict` 的 `musico_api_token` Cookie（HTTPS 下带 `Secure`，应用启动时补写一次）；后端只在 `GET` / `HEAD` 上接受这个 Cookie，写操作必须带请求头，跨站请求无法借 Cookie 冒充。不填令牌时下载、排序、删除会返回 401，曲库与下载记录也读不到，页面会提示去「配置」里补令牌。
+  没有设置 `API_TOKEN` 时整条鉴权链是关闭的（默认），这时**只应在本机或内网暴露**：测试栈默认把 `8090` 绑到 `127.0.0.1`，正式栈建议配上 `API_TOKEN` 并限制来源，或在前面加一层反向代理认证。
 - **下载 worker 是单实例设计**：`.part` 续传文件与任务租约强相关，当前数据库租约只保护写库、不保护同一任务跨进程写同一磁盘文件；请勿对 musico 服务水平扩容多个副本，也不要为同一 `MUSIC_LIBRARY_DIR` 挂载启动第二个 worker。
 - 榜单抓取与下载使用独立的 HTTP 客户端与连接池，长连接大文件不会拖慢抓榜/健康检查；预览与下载各有独立的读超时。
 

@@ -119,7 +119,9 @@ def test_small_json_responses_are_left_alone() -> None:
 
 
 def test_the_gzip_layer_keeps_audio_covers_downloads_and_ranges_uncompressed() -> None:
-    """Starlette 1.4 does not exclude media types; the wrapper must skip them."""
+    """Starlette's default list only covers a few images, so the middleware
+    passes a wider one (audio/video/image + octet-stream); 206 ranges are
+    skipped by the responder itself."""
     entries = [item for item in _app().user_middleware if item.cls is ExcludingGZipMiddleware]
     assert len(entries) == 1
     assert entries[0].kwargs["minimum_size"] == 1024

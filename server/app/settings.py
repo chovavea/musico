@@ -7,6 +7,11 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# Path defaults are anchored at the repository root: that is ``/app`` inside the
+# image (``/app/server/app/settings.py``) and the checkout on a laptop.  The old
+# hard-coded ``/app/...`` defaults made a plain local
+# ``uvicorn app.main:create_app`` die on ``mkdir /app/data/music``.
+_REPO_CONFIGS = _REPO_ROOT / "configs"
 
 
 class Settings(BaseSettings):
@@ -57,13 +62,15 @@ class Settings(BaseSettings):
         default=1.5, gt=0.0, alias="PREVIEW_HEDGE_MAX_DELAY_SEC"
     )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
-    boards_yaml: Path = Field(default=Path("/app/configs/boards.yaml"), alias="BOARDS_YAML")
+    boards_yaml: Path = Field(default=_REPO_CONFIGS / "boards.yaml", alias="BOARDS_YAML")
     http_timeout_sec: float = Field(default=15.0, alias="HTTP_TIMEOUT_SEC")
     api_token: str = Field(default="", alias="API_TOKEN")
     latest_cache_ttl_sec: int = Field(default=45, alias="LATEST_CACHE_TTL_SEC")
-    music_library_dir: Path = Field(default=Path("/app/data/music"), alias="MUSIC_LIBRARY_DIR")
+    music_library_dir: Path = Field(
+        default=_REPO_ROOT / "data" / "music", alias="MUSIC_LIBRARY_DIR"
+    )
     download_source_config: Path = Field(
-        default=Path("/app/configs/download_sources.yaml"), alias="DOWNLOAD_SOURCE_CONFIG"
+        default=_REPO_CONFIGS / "download_sources.yaml", alias="DOWNLOAD_SOURCE_CONFIG"
     )
     download_source_dirs: str = Field(default="", alias="DOWNLOAD_SOURCE_DIRS")
     download_max_retries: int = Field(default=3, alias="DOWNLOAD_MAX_RETRIES")
@@ -178,13 +185,17 @@ def apply_file_env() -> None:
 
     Docker's official images accept ``FOO_FILE`` as a pointer to a file holding
     the value of ``FOO``.  The same convention here keeps secrets out of the
-    container environment (and out of ``docker inspect``): an explicit value
-    always wins, and an unreadable or empty file is a hard error rather than a
-    silent fallback to a default.
+    container environment (and out of ``docker inspect``): an explicit
+    non-empty value always wins, and an unreadable or empty file is a hard
+    error rather than a silent fallback to a default.
+
+    An *empty* variable counts as absent, which is what lets compose pass
+    ``DATABASE_PASSWORD=""`` while a deployment keeps using
+    ``DATABASE_PASSWORD_FILE``.
     """
     for alias in _setting_aliases():
         path = os.environ.get(f"{alias}_FILE")
-        if not path or alias in os.environ:
+        if not path or os.environ.get(alias):
             continue
         try:
             value = Path(path).read_text(encoding="utf-8").rstrip("\r\n")

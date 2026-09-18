@@ -49,23 +49,43 @@ const REQUEST_TIMEOUT_MS = 15_000;
 // 所以它拿到的超时必须比默认值宽松，否则浏览器先放弃、用户点了没有任何反应。
 const FALLBACK_RESOLVE_TIMEOUT_MS = 120_000;
 // 设置了 API_TOKEN 的部署要求写操作带令牌。令牌只存在本机浏览器里，由「配置」
-// 菜单填写，读接口不带（后端也只校验写操作）。
+// 菜单填写；曲库列表、曲库文件和下载记录也要求令牌（后端按白名单放行榜单、
+// 搜索、试听这些公开读接口）。
 const API_TOKEN_STORAGE_KEY = "musico-api-token";
+// <audio src> / <a href> 这类媒体地址带不了请求头，令牌还要以同源 Cookie 的
+// 形式送过去；后端只在 GET/HEAD 上认它，写操作仍然必须带 X-API-Token。
+const API_TOKEN_COOKIE_KEY = "musico_api_token";
 const AUTH_ERROR_CODE = 40101;
-const AUTH_ERROR_MESSAGE = "写操作需要 API Token：请在「配置」里填入与 API_TOKEN 相同的值";
+const AUTH_ERROR_MESSAGE = "需要 API Token：请在「配置」里填入与 API_TOKEN 相同的值";
 let activeFullSearch: AbortController | null = null;
+// localStorage 不可用（无痕模式 / 禁用存储）时，令牌只活在本页会话里。
+let sessionApiToken = "";
 
 export function getApiToken(): string {
   try {
-    return globalThis.localStorage?.getItem(API_TOKEN_STORAGE_KEY)?.trim() ?? "";
+    const stored = globalThis.localStorage?.getItem(API_TOKEN_STORAGE_KEY)?.trim();
+    if (stored) return stored;
   } catch {
-    return "";
+    // 无痕模式或禁用存储：退回本页会话里的值。
   }
+  return sessionApiToken;
+}
+
+/** 把已保存的令牌同步进 Cookie；应用启动和保存令牌时各调一次。 */
+export function syncApiTokenCookie(): void {
+  const doc = globalThis.document;
+  if (!doc) return;
+  const token = getApiToken();
+  const secure = globalThis.location?.protocol === "https:" ? "; Secure" : "";
+  doc.cookie = token
+    ? `${API_TOKEN_COOKIE_KEY}=${encodeURIComponent(token)}; path=/; SameSite=Strict${secure}`
+    : `${API_TOKEN_COOKIE_KEY}=; path=/; SameSite=Strict; Max-Age=0`;
 }
 
 export function setApiToken(value: string): void {
+  const trimmed = value.trim();
+  sessionApiToken = trimmed;
   try {
-    const trimmed = value.trim();
     if (trimmed) {
       globalThis.localStorage?.setItem(API_TOKEN_STORAGE_KEY, trimmed);
     } else {
@@ -74,6 +94,7 @@ export function setApiToken(value: string): void {
   } catch {
     // 无痕模式或禁用存储时，令牌只在本页会话里生效。
   }
+  syncApiTokenCookie();
 }
 
 function requestHeaders(init?: RequestInit): Headers {

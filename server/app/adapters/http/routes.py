@@ -307,8 +307,15 @@ def build_router() -> APIRouter:
         return ok(await request.app.state.download_service.summary())
 
     @router.get("/downloads")
-    async def downloads(request: Request) -> Any:
-        return ok({"items": await request.app.state.download_service.tasks()})
+    async def downloads(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> Any:
+        """Newest first; page with ``limit`` / ``offset`` (default: the last 100)."""
+        return ok(
+            {"items": await request.app.state.download_service.tasks(limit, offset)}
+        )
 
     @router.get("/downloads/{task_id}")
     async def download_detail(task_id: str, request: Request) -> Any:

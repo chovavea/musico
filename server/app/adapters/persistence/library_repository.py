@@ -599,12 +599,14 @@ class LibraryRepository:
         )
         return [self.asset_payload(asset, track) for asset, track in result.all()]
 
-    async def list_tasks(self, limit: int = 100) -> list[dict[str, Any]]:
+    async def list_tasks(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """Most recent first. ``id`` breaks ``created_at`` ties so pages stay stable."""
         result = await self._session.execute(
             select(DownloadTaskRow, LibraryTrackRow)
             .join(LibraryTrackRow, LibraryTrackRow.id == DownloadTaskRow.library_track_id)
-            .order_by(DownloadTaskRow.created_at.desc())
-            .limit(limit)
+            .order_by(DownloadTaskRow.created_at.desc(), DownloadTaskRow.id.desc())
+            .offset(max(0, offset))
+            .limit(max(1, limit))
         )
         return [self._task_fields(task, track) for task, track in result.all()]
 

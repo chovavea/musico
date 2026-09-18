@@ -1,5 +1,5 @@
 .env
-.venv/
+.venv*
 venv/
 *.egg-info/
 __pycache__/
@@ -7,6 +7,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
 node_modules/
 web/dist/
 web/node_modules/
@@ -17,5 +20,5 @@ tmp/
 .playwright-cli/
 data/music/
 data/postgres/
-deploy/*.tar
-deploy/*.tar.gz
+*.tar
+*.tar.gz

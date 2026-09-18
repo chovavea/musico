@@ -1,3 +1,8 @@
+# 总览页的两个卡片槽位：enabled 的榜单里必须恰好各有一个 overview_slot: left
+# 和一个 right，否则启动时报
+#   "enabled overview_slot must contain exactly left and right"
+# 并直接退出（禁用掉带槽位的榜单也算缺失）。其余榜单不写 overview_slot，
+# 只在榜单页展示。
 boards:
   - id: qq_hot
     platform: qqmusic

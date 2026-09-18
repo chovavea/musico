@@ -79,6 +79,29 @@ def test_file_env_keeps_an_explicit_value(tmp_path: Path, monkeypatch: pytest.Mo
     assert os.environ["DATABASE_PASSWORD"] == "from-env"
 
 
+def test_file_env_beats_an_empty_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """compose passes DATABASE_PASSWORD even when a deployment uses a secret file."""
+    secret = tmp_path / "db_password"
+    secret.write_text("from-file", encoding="utf-8")
+    monkeypatch.setenv("DATABASE_PASSWORD", "")
+    monkeypatch.setenv("DATABASE_PASSWORD_FILE", str(secret))
+
+    apply_file_env()
+
+    assert os.environ["DATABASE_PASSWORD"] == "from-file"
+
+
+def test_path_defaults_are_repo_relative() -> None:
+    """A local uvicorn run cannot create /app; the defaults must point at the checkout."""
+    settings = Settings()
+    root = Path(__file__).resolve().parents[3]
+
+    assert settings.boards_yaml == root / "configs" / "boards.yaml"
+    assert settings.boards_yaml.is_file()
+    assert settings.download_source_config == root / "configs" / "download_sources.yaml"
+    assert settings.music_library_dir == root / "data" / "music"
+
+
 def test_file_env_refuses_a_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_PASSWORD_FILE", str(tmp_path / "absent"))
 

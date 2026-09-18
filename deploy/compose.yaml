@@ -6,6 +6,8 @@
 #
 # 应用镜像已打进榜单配置与前端静态资源，不需要源码。
 # 不要水平扩容 musico（下载 worker 是单实例，不能共用同一音乐目录）。
+# 这个栈是对外暴露的：请至少设置 API_TOKEN（写操作 + 曲库/下载记录读取都要求
+# 令牌），并把 8080 限制在内网，或在前面加一层反向代理认证。
 
 name: musico
 
@@ -18,15 +20,21 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      ENABLE_MEDIA_RESOLVER: "false"
-      LOG_LEVEL: INFO
-      STALENESS_MULTIPLIER: "2"
+      # 连接串按字段交给 settings.py 拼装（密码里的 @ : / # 会被 URL 转义），
+      # DATABASE_URL 显式置空，免得 .env 里的本机地址被带进容器。应用设置
+      # （日志级别、榜单过期倍数等）留在 .env，见 deploy/.env.example。
+      DATABASE_URL: ""
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_NAME: ${POSTGRES_DB}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: Asia/Shanghai
       API_TOKEN: ${API_TOKEN:-}
       BOARDS_YAML: /app/configs/boards.yaml
       MUSIC_LIBRARY_DIR: /app/data/music
       DOWNLOAD_SOURCE_CONFIG: /app/configs/download_sources.yaml
+      # 外部下载源插件目录；内置源（镜像里的 app/download_sources）永远会被扫描。
       DOWNLOAD_SOURCE_DIRS: /app/download_sources
     volumes:
       - ./data/music:/app/data/music
@@ -44,10 +52,12 @@ services:
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/platforms', timeout=2)",
         ]
-      interval: 5s
+      # 健康检查只给人/监控看，没有服务依赖它；5 秒一次等于每小时 720 次
+      # Python 解释器启动，低配设备上是纯开销。
+      interval: 30s
       timeout: 3s
-      retries: 20
-      start_period: 20s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
     container_name: musico-app
 
