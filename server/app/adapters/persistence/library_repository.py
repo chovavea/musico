@@ -20,10 +20,12 @@ from app.adapters.persistence.models import (
 )
 from app.domain.matching import (
     artist_key,
-    is_auto_match,
+    is_same_recording,
+    legacy_track_key,
     normalize_text,
     track_identity_key,
     track_key,
+    versioned_track_key,
 )
 from app.domain.models import AudioQuality, DownloadCandidate, TrackRef
 
@@ -163,7 +165,7 @@ class LibraryRepository:
             clauses.insert(0, LibraryTrackRow.isrc == track.isrc)
         result = await self._session.execute(select(LibraryTrackRow).where(or_(*clauses)))
         for row in result.scalars().all():
-            if is_auto_match(track, _track_from_row(row)):
+            if is_same_recording(track, _track_from_row(row)):
                 return row
         return None
 
@@ -755,6 +757,7 @@ def task_idempotency_key(
     quality_fields = requested_quality.model_dump(mode="json", exclude_none=True)
     quality_fields["format"] = requested_quality.format.lower().lstrip(".")
     quality_payload = json.dumps(quality_fields, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(
-        f"{track_key(track)}|quality:{quality_payload}".encode()
+    key = hashlib.sha256(
+        f"{legacy_track_key(track)}|quality:{quality_payload}".encode()
     ).hexdigest()
+    return versioned_track_key(key, track)

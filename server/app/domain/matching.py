@@ -9,12 +9,35 @@ from app.domain.models import TrackRef
 from app.domain.zh_t2s import fold_traditional
 
 _BRACKETS_RE = re.compile(r"[\(（][^)）]*[\)）]|[\[【][^\]】]*[\]】]")
+_VERSION_BRACKET_RE = re.compile(
+    r"\([^)]*?(?:live|remix|instrumental|伴奏|现场)[^)]*\)"
+    r"|\[[^]]*?(?:live|remix|instrumental|伴奏|现场)[^]]*\]"
+)
+
+
+def _strip_version_brackets(text: str) -> str:
+    """Drop live/remix brackets, matching markers after 繁→简 folding.
+
+    Folding is only used to find the span. ``(現場)`` is removed and the rest
+    of the title keeps its original characters, so stored identities do not
+    shift for ordinary traditional titles.
+    """
+    folded = fold_traditional(text)
+    spans = [match.span() for match in _VERSION_BRACKET_RE.finditer(folded)]
+    if not spans or len(folded) != len(text):
+        return text
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        pieces.append(text[cursor:start])
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def normalize_text(value: str | None) -> str:
     text = unicodedata.normalize("NFKC", value or "").casefold()
-    text = re.sub(r"\([^)]*?(?:live|remix|instrumental|伴奏|现场)[^)]*\)", "", text)
-    text = re.sub(r"\[[^]]*?(?:live|remix|instrumental|伴奏|现场)[^]]*\]", "", text)
+    text = _strip_version_brackets(text)
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", text, flags=re.UNICODE)
 
 
@@ -140,7 +163,23 @@ def track_match_score(left: TrackRef, right: TrackRef) -> float:
     return 0.9
 
 
+def is_ringtone_or_snippet(track: TrackRef) -> bool:
+    """Ringtones and snippets are not full recordings and cannot be downloaded."""
+    text = fold_traditional(
+        unicodedata.normalize("NFKC", f"{track.version or ''} {track.title}").casefold()
+    )
+    if "片段" in text or "铃声" in text:
+        return True
+    return any(
+        re.search(rf"(?<![a-z]){marker}(?![a-z])", text) for marker in ("ringtone", "snippet")
+    )
+
+
 def is_auto_match(left: TrackRef, right: TrackRef) -> bool:
+    if is_ringtone_or_snippet(left) or is_ringtone_or_snippet(right):
+        return False
+    if recording_version_key(left) != recording_version_key(right):
+        return False
     return track_match_score(left, right) >= 0.9
 
 
@@ -259,11 +298,14 @@ def is_same_recording(left: TrackRef, right: TrackRef) -> bool:
     ``normalize_text`` strips bracketed version words, so title equality alone
     would treat a studio take and its live twin as one song. Search merge and
     library badges both use this guard.
+
+    Version is decided before ISRC. A shared code must not retarget a studio
+    row onto a live or remix take when the two titles carry different markers.
     """
+    if recording_version_key(left) != recording_version_key(right):
+        return False
     if left.isrc and right.isrc and left.isrc.casefold() == right.isrc.casefold():
         return True
-    if version_variant_conflict(left, right) or version_variant_conflict(right, left):
-        return False
     if title_match_key(left.title) != title_match_key(right.title):
         return False
     if not artists_overlap(left.artist, right.artist):
@@ -277,6 +319,7 @@ def is_same_recording(left: TrackRef, right: TrackRef) -> bool:
 
 
 def track_identity(track: TrackRef) -> str:
+    """Legacy identity fields; recording versions are added by ``track_key``."""
     return "|".join(
         (
             track.isrc.casefold() if track.isrc else "",
@@ -287,8 +330,63 @@ def track_identity(track: TrackRef) -> str:
     )
 
 
-def track_key(track: TrackRef) -> str:
+def _edition_beyond_markers(version: str | None) -> str:
+    """Edition text that known markers do not already express.
+
+    ``现场版``, ``現場`` and ``Live Version`` collapse to their markers.
+    ``2020 edition`` stays, because the year is not a marker or a filler word.
+    The check runs on the spaced text so ``live`` is not cut out of ``olive``.
+    """
+    raw = fold_traditional(unicodedata.normalize("NFKC", version or "").casefold())
+    stripped = raw
+    for marker in sorted(_CJK_VERSION_MARKERS, key=len, reverse=True):
+        stripped = stripped.replace(marker, " ")
+    for marker in _ASCII_VERSION_MARKERS:
+        stripped = re.sub(rf"(?<![a-z]){marker}(?![a-z])", " ", stripped)
+    for filler in ("edition", "version"):
+        stripped = re.sub(rf"(?<![a-z]){filler}(?![a-z])", " ", stripped)
+    stripped = stripped.replace("版", " ")
+    return normalize_text(stripped)
+
+
+def _normalized_version_text(version: str | None) -> str:
+    folded = fold_traditional(unicodedata.normalize("NFKC", version or "").casefold())
+    return normalize_text(folded)
+
+
+def recording_version_key(track: TrackRef) -> str:
+    """Keep studio, live, remix and explicitly named editions distinct.
+
+    A marker in ``version`` is equivalent to the same marker in the title,
+    including a trailing ``版`` and traditional spellings such as ``現場``.
+    Unknown explicit edition names are retained rather than silently erased.
+    This participates in persisted identities: changes require a data migration.
+    """
+    markers = version_markers(f"{track.title} {track.version or ''}")
+    parts = sorted(markers)
+    if _edition_beyond_markers(track.version):
+        parts.append(f"version:{_normalized_version_text(track.version)}")
+    return "|".join(parts)
+
+
+def legacy_track_key(track: TrackRef) -> str:
     return sha256(track_identity(track).encode("utf-8")).hexdigest()
+
+
+def versioned_track_key(key: str, track: TrackRef) -> str:
+    """Scope an existing hash without changing the keys of ordinary studio tracks.
+
+    Wrapping the old hash lets migrations also preserve quality-specific task
+    keys, even when their original request metadata is no longer available.
+    """
+    version = recording_version_key(track)
+    if not version:
+        return key
+    return sha256(f"{key}|recording:{version}".encode()).hexdigest()
+
+
+def track_key(track: TrackRef) -> str:
+    return versioned_track_key(legacy_track_key(track), track)
 
 
 def track_identity_key(track: TrackRef) -> str:

@@ -230,7 +230,10 @@ def test_listen_match_rejects_ringtones_and_snippets() -> None:
         artist="周杰伦",
         duration_ms=None,
     )
-    assert is_auto_match(studio, ringtone)
+    assert not is_auto_match(studio, ringtone)
+    assert not is_auto_match(ringtone, ringtone)
+    assert not is_auto_match(studio, snippet)
+    assert not is_auto_match(snippet, snippet)
     assert not is_listen_match(studio, ringtone)
     assert is_fuzzy_preview_match(studio, snippet)
     assert not is_fuzzy_listen_match(studio, snippet)

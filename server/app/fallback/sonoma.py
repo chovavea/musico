@@ -35,6 +35,8 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _ANCHOR_TITLE_RE = re.compile(r'title="(?P<title>[^"]*)"')
 _NAME_SPLIT_RE = re.compile(r"^(?P<artist>.+?)_《(?P<title>.+?)》")
 _LABEL_RE = re.compile(r'<span class="tagstyle2[^>]*>(?P<label>[^<]*)</span>', re.IGNORECASE)
+# Quality badges on the result row, not a live/remix/edition name.
+_FORMAT_LABELS = frozenset({"wav", "mp3", "flac", "ape", "aac", "ogg", "m4a", "alac", "dsd"})
 _SIZE_RE = re.compile(r"大小：\s*(?P<size>[0-9.]+\s*[KMG]?B)")
 _WAV_HREF_RE = re.compile(r"(?P<href>/dls/rwk\d+\.html)", re.IGNORECASE)
 # Host is anchored so a page cannot smuggle pan.quark.cn inside another origin.
@@ -290,12 +292,14 @@ def _split_name(name: str, attrs: str) -> tuple[str, str]:
 
 
 def _hit_ref(hit: SongHit) -> TrackRef:
+    label = hit.label.strip()
+    version = label if label.casefold() not in _FORMAT_LABELS else ""
     return TrackRef(
         platform="fallback",
         external_id=hit.path,
         title=hit.title,
         artist=hit.artist,
-        version=hit.label or None,
+        version=version or None,
     )
 
 
