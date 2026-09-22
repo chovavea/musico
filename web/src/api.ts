@@ -56,7 +56,7 @@ const API_TOKEN_STORAGE_KEY = "musico-api-token";
 // 形式送过去；后端只在 GET/HEAD 上认它，写操作仍然必须带 X-API-Token。
 const API_TOKEN_COOKIE_KEY = "musico_api_token";
 const AUTH_ERROR_CODE = 40101;
-const AUTH_ERROR_MESSAGE = "需要 API Token：请在「配置」里填入与 API_TOKEN 相同的值";
+const AUTH_ERROR_MESSAGE = "请在「配置」中填写有效的 API Token";
 let activeFullSearch: AbortController | null = null;
 // localStorage 不可用（无痕模式 / 禁用存储）时，令牌只活在本页会话里。
 let sessionApiToken = "";

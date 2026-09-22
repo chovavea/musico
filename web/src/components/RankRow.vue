@@ -31,10 +31,9 @@ const delta = computed(() => {
 });
 
 const rankKlass = computed(() => {
-  if (props.item.rank === 1) return "text-[1.15rem] text-amber-800 dark:text-amber-300";
-  if (props.item.rank === 2) return "text-[0.95rem] text-zinc-700 dark:text-zinc-300";
-  if (props.item.rank === 3) return "text-[0.95rem] text-amber-700 dark:text-amber-400";
-  return "text-[0.95rem] text-zinc-600 dark:text-zinc-300";
+  if (props.item.rank === 1) return "text-[1.05rem] font-bold text-accent";
+  if (props.item.rank <= 3) return "text-[0.95rem] font-semibold text-accent";
+  return "text-[0.95rem] font-medium text-zinc-400 dark:text-zinc-500";
 });
 
 const active = computed(
@@ -52,7 +51,7 @@ function onPlay() {
 <template>
   <div
     class="group relative grid min-h-[52px] w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-white/5"
-    :class="[rowGridClass, active ? 'bg-zinc-50 dark:bg-white/5' : '']"
+    :class="[rowGridClass, active ? 'bg-accent-soft' : '']"
   >
     <button
       type="button"
@@ -60,7 +59,7 @@ function onPlay() {
       :aria-label="`播放 ${item.title} · ${item.artist}`"
       @click="onPlay"
     />
-    <div class="pointer-events-none tabular text-right text-[0.95rem] font-extrabold tracking-[0.02em]" :class="rankKlass">
+    <div class="pointer-events-none tabular text-right" :class="rankKlass">
       {{ String(item.rank).padStart(2, "0") }}
     </div>
     <div class="pointer-events-none relative h-11 w-11 overflow-hidden rounded-lg">
@@ -77,7 +76,7 @@ function onPlay() {
       </span>
     </div>
     <div class="pointer-events-none min-w-0">
-      <div class="type-title truncate" :class="active ? 'text-emerald-600 dark:text-emerald-300' : ''">
+      <div class="type-title truncate" :class="active ? 'text-accent' : ''">
         {{ item.title }}
       </div>
       <div class="truncate text-[0.74rem] text-artist">{{ item.artist }}</div>

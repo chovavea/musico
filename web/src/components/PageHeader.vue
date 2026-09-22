@@ -31,11 +31,11 @@ withDefaults(
     </RouterLink>
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div class="min-w-0">
-        <p v-if="eyebrow" class="text-[0.72rem] tracking-[0.08em] text-tertiary">{{ eyebrow }}</p>
+        <p v-if="eyebrow" class="text-[0.72rem] font-medium text-tertiary">{{ eyebrow }}</p>
         <h1
           data-page-heading
           tabindex="-1"
-          class="mt-1 text-[1.35rem] font-extrabold leading-[1.15] tracking-[0.02em] outline-none md:text-[1.5rem]"
+          class="mt-1 text-[1.35rem] font-bold leading-[1.2] outline-none md:text-[1.5rem]"
         >
           {{ title }}
         </h1>

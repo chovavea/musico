@@ -89,7 +89,7 @@ const staleLabel = computed(() => {
         <RouterLink
           v-else
           :to="`/charts/${board.id}`"
-          class="inline-flex min-h-11 items-center text-[1.05rem] font-bold tracking-[0.01em] hover:underline"
+          class="inline-flex min-h-11 items-center text-[1.05rem] font-bold hover:underline"
         >
           {{ chartShortName(board.name) }}
         </RouterLink>

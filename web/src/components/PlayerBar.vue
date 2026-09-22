@@ -207,7 +207,7 @@ function onSeekKey(event: KeyboardEvent) {
       @keydown="onSeekKey"
     >
       <span class="absolute inset-x-0 h-1.5 bg-zinc-200 dark:bg-zinc-800" />
-      <span class="absolute left-0 h-1.5 bg-zinc-900 dark:bg-white" :style="{ width: `${percent}%` }" />
+      <span class="absolute left-0 h-1.5 bg-accent" :style="{ width: `${percent}%` }" />
     </div>
 
     <div class="mx-auto w-full max-w-7xl px-3 pb-2 sm:px-4">

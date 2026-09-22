@@ -10,7 +10,9 @@
   --text-primary: rgb(24 24 27);
   --text-secondary: rgb(63 63 70);
   --text-tertiary: rgb(82 82 91);
-  --text-artist: rgb(52 52 58);
+  --text-artist: rgb(82 82 91);
+  --accent: #bf3f2a;
+  --accent-soft: rgb(191 63 42 / 0.09);
   --ui-sans:
     "PingFang SC",
     "Hiragino Sans GB",
@@ -27,7 +29,9 @@ html.dark {
   --text-primary: rgb(244 244 245);
   --text-secondary: rgb(212 212 216);
   --text-tertiary: rgb(161 161 170);
-  --text-artist: rgb(212 212 216);
+  --text-artist: rgb(161 161 170);
+  --accent: #e07356;
+  --accent-soft: rgb(224 115 86 / 0.16);
 }
 
 html,
@@ -50,6 +54,29 @@ body {
   @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;
   font-family: var(--ui-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(24 24 27 / 0.88);
+  color: rgb(250 250 250);
+}
+
+html.dark ::selection {
+  background: rgb(244 244 245 / 0.9);
+  color: rgb(24 24 27);
+}
+
+.text-accent {
+  color: var(--accent);
+}
+
+.bg-accent {
+  background-color: var(--accent);
+}
+
+.bg-accent-soft {
+  background-color: var(--accent-soft);
 }
 
 @property --page-ambient {
@@ -185,6 +212,22 @@ input[type="search"]::-webkit-search-results-decoration {
 .page-stage {
   position: relative;
   overflow-x: hidden;
+}
+
+.tile-grid {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .tile-grid {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .tile-grid > * {
+    flex: 1 1 20rem;
+    min-width: 0;
+  }
 }
 
 .page-enter-active,

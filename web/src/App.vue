@@ -267,11 +267,16 @@ onUnmounted(() => {
       <div class="mx-auto grid max-w-7xl grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 px-4 py-2 md:py-3">
         <RouterLink to="/" class="flex min-h-11 items-center gap-2.5" aria-label="Musico 首页">
           <span
-            class="grid h-11 w-11 place-items-center rounded-2xl bg-zinc-900 text-[1.35rem] font-extrabold tracking-[-0.04em] text-white dark:bg-white dark:text-zinc-900"
+            class="grid h-10 w-10 place-items-center rounded-xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
           >
-            m
+            <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" aria-hidden="true">
+              <path d="M5 17V9.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+              <path d="M9.5 17v-4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+              <path d="M14 17V7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+              <path d="M18.5 17v-5.5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+            </svg>
           </span>
-          <span class="text-[1.35rem] font-extrabold leading-none tracking-[-0.04em]">musico</span>
+          <span class="text-[1.25rem] font-bold leading-none tracking-[-0.03em]">musico</span>
         </RouterLink>
 
         <div class="flex min-w-0 items-center justify-end gap-1">

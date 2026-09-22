@@ -29,7 +29,7 @@ function rgb(r: number, g: number, b: number, a?: number): string {
 }
 
 function hslToRgb(h: number, s: number, l: number): RGB {
-  return toRgb(h, clamp(s, 0.18, 0.62), clamp(l, 0.16, 0.88));
+  return toRgb(h, clamp(s, 0.1, 0.5), clamp(l, 0.16, 0.88));
 }
 
 function fallbackPalette(dark: boolean): CoverPalette {
@@ -59,24 +59,24 @@ function fallbackPalette(dark: boolean): CoverPalette {
 
 function paletteFromRgb(sample: RGB, dark: boolean): CoverPalette {
   const [h, s] = rgbToHsl(sample[0], sample[1], sample[2]);
-  const sat = Math.max(0.22, s);
-  const bgL = dark ? 0.22 : 0.86;
-  const titleL = dark ? 0.82 : 0.28;
-  const mutedL = dark ? 0.64 : 0.42;
+  const sat = Math.max(0.16, s);
+  const bgL = dark ? 0.2 : 0.84;
+  const titleL = dark ? 0.85 : 0.26;
+  const mutedL = dark ? 0.68 : 0.4;
   const chipBgL = dark ? 0.78 : 0.3;
   const chipFgL = dark ? 0.24 : 0.86;
-  const bg = hslToRgb(h, sat * 0.45, bgL);
-  const title = hslToRgb(h, sat * 0.38, titleL);
-  const muted = hslToRgb(h, sat * 0.22, mutedL);
-  const chipBg = hslToRgb(h, sat * 0.32, chipBgL);
-  const chipFg = hslToRgb(h, sat * 0.18, chipFgL);
+  const bg = hslToRgb(h, sat * 0.34, bgL);
+  const title = hslToRgb(h, sat * 0.3, titleL);
+  const muted = hslToRgb(h, sat * 0.18, mutedL);
+  const chipBg = hslToRgb(h, sat * 0.3, chipBgL);
+  const chipFg = hslToRgb(h, sat * 0.16, chipFgL);
   return {
     bg: rgb(...bg),
     title: rgb(...title),
     muted: rgb(...muted),
     chipBg: rgb(...chipBg),
     chipFg: rgb(...chipFg),
-    overlay: rgb(...bg, dark ? 0.52 : 0.58),
+    overlay: rgb(...bg, dark ? 0.56 : 0.62),
     hover: rgb(...title, 0.1),
     active: rgb(...title, 0.14),
   };

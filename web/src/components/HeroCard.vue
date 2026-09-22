@@ -45,10 +45,9 @@ const heroActive = computed(() =>
 );
 
 function rankKlass(rank: number): string {
-  if (rank === 1) return "text-[1.15rem] font-extrabold text-amber-800 dark:text-amber-300";
-  if (rank === 2) return "text-[0.95rem] font-extrabold text-zinc-700 dark:text-zinc-300";
-  if (rank === 3) return "text-[0.95rem] font-extrabold text-amber-700 dark:text-amber-400";
-  return "text-[0.95rem] font-extrabold text-zinc-600 dark:text-zinc-300";
+  if (rank === 1) return "text-[1.1rem] font-bold text-primary";
+  if (rank <= 3) return "text-[0.95rem] font-semibold text-primary";
+  return "text-[0.95rem] font-medium text-tertiary";
 }
 
 function isCurrent(item: RankItem): boolean {
@@ -68,8 +67,8 @@ function onPlay(item?: RankItem) {
 
 <template>
   <article
-    class="relative overflow-hidden rounded-2xl"
-    :class="followAmbient ? 'ring-1 ring-zinc-200/80' : ''"
+    class="relative overflow-hidden rounded-2xl ring-1"
+    :class="followAmbient ? 'ring-zinc-200/80' : 'ring-black/[0.06] dark:ring-white/[0.06]'"
     :style="{
       backgroundColor: heroBg,
       '--hero-hover': heroHover,
@@ -83,7 +82,7 @@ function onPlay(item?: RankItem) {
         :size="500"
         eager
         alt=""
-        class="h-full w-full scale-[1.8] object-cover blur-3xl saturate-125"
+        class="h-full w-full scale-[1.8] object-cover blur-3xl saturate-105"
       />
       <div class="absolute inset-0" :style="{ backgroundColor: palette.overlay }" />
     </div>
@@ -140,7 +139,7 @@ function onPlay(item?: RankItem) {
                 :aria-label="`播放 ${item.title} · ${item.artist}`"
                 @click="onPlay(item)"
               />
-              <span class="pointer-events-none tabular text-right tracking-[0.02em]" :class="rankKlass(item.rank)">
+              <span class="pointer-events-none tabular text-right" :class="rankKlass(item.rank)">
                 {{ item.rank }}
               </span>
               <span class="pointer-events-none min-w-0">

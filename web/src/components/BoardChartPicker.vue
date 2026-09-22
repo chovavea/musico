@@ -703,7 +703,7 @@ watch(open, async (isOpen) => {
     <button
       ref="triggerEl"
       type="button"
-      class="chart-title-trigger inline-flex min-h-11 max-w-full items-center gap-1 rounded-full px-1 text-left text-[1.05rem] font-bold tracking-[0.01em] hover:bg-zinc-100 dark:hover:bg-white/10"
+      class="chart-title-trigger inline-flex min-h-11 max-w-full items-center gap-1 rounded-full px-1 text-left text-[1.05rem] font-bold hover:bg-zinc-100 dark:hover:bg-white/10"
       :aria-expanded="open"
       :aria-controls="listboxId"
       aria-haspopup="listbox"

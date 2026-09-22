@@ -1,19 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import BoardColumn from "../components/BoardColumn.vue";
 import HeroCard from "../components/HeroCard.vue";
+import PlatformMark from "../components/PlatformMark.vue";
 import GlazeHome from "./GlazeHome.vue";
 import { useOverviewColumns } from "../composables/useOverviewColumns";
-import { useSlidingPill } from "../composables/useSlidingPill";
 import { platformShortName } from "../lib/boards";
 import { todayLabel } from "../lib/format";
 import { useThemeStore } from "../stores/theme";
 
 const theme = useThemeStore();
 const { store, tab, columns, setKey, groupsOf } = useOverviewColumns();
-const tabNav = ref<HTMLElement | null>(null);
 const activeColumn = computed(() => columns.value[tab.value]);
-const tabPill = useSlidingPill(tabNav, () => [tab.value, columns.value.length]);
 </script>
 
 <template>
@@ -25,25 +23,31 @@ const tabPill = useSlidingPill(tabNav, () => [tab.value, columns.value.length]);
   />
   <div v-else>
     <section class="mb-6">
-      <p class="text-[0.72rem] tracking-[0.08em] text-secondary">{{ todayLabel() }}</p>
-      <h1 data-page-heading tabindex="-1" class="mt-1 text-[1.35rem] font-extrabold leading-[1.15] tracking-[0.02em] outline-none md:text-[1.5rem]">今日榜单</h1>
+      <p class="text-[0.72rem] font-medium text-tertiary">{{ todayLabel() }}</p>
+      <h1 data-page-heading tabindex="-1" class="mt-1 text-[1.35rem] font-bold leading-[1.2] outline-none md:text-[1.5rem]">今日榜单</h1>
     </section>
 
     <div
-      ref="tabNav"
-      class="relative mb-4 flex gap-1 overflow-x-auto rounded-full bg-zinc-200/80 p-1 md:hidden dark:bg-zinc-800"
+      class="mb-4 flex w-full gap-1 [scrollbar-width:none] md:hidden [&::-webkit-scrollbar]:hidden"
+      role="tablist"
+      aria-label="平台"
     >
-      <span class="nav-pill nav-pill-surface" :style="tabPill" aria-hidden="true" />
       <button
         v-for="(column, index) in columns"
         :key="column.source.id"
         type="button"
-        class="type-title relative z-10 grid h-11 min-w-24 flex-1 place-items-center rounded-full px-3"
-        :data-nav-on="tab === index"
-        :aria-pressed="tab === index"
+        role="tab"
+        class="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1 overflow-hidden rounded-full px-2 text-[0.78rem] leading-none"
+        :class="
+          tab === index
+            ? 'bg-zinc-900 font-medium text-white dark:bg-zinc-100 dark:text-zinc-900'
+            : 'bg-zinc-100 font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300'
+        "
+        :aria-selected="tab === index"
         @click="tab = index"
       >
-        {{ platformShortName(column.board.platform, store.platforms) }}
+        <PlatformMark :platform="column.board.platform" :size="16" />
+        <span class="min-w-0 truncate">{{ platformShortName(column.board.platform, store.platforms) }}</span>
       </button>
     </div>
 
@@ -63,7 +67,7 @@ const tabPill = useSlidingPill(tabNav, () => [tab.value, columns.value.length]);
       </Transition>
     </div>
 
-    <div class="hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-3">
+    <div class="tile-grid gap-4">
       <HeroCard
         v-for="column in columns"
         :key="`hero:${column.source.id}`"
@@ -72,7 +76,7 @@ const tabPill = useSlidingPill(tabNav, () => [tab.value, columns.value.length]);
       />
     </div>
 
-    <div class="mt-6 hidden gap-8 md:grid md:grid-cols-2 lg:grid-cols-3">
+    <div class="tile-grid mt-6 gap-8">
       <BoardColumn
         v-for="column in columns"
         :key="`list:${column.source.id}`"

@@ -29,7 +29,7 @@ function play() {
 <template>
   <div
     class="group flex min-h-16 items-center gap-3 px-3 py-2.5 text-left transition hover:bg-zinc-50 dark:hover:bg-white/5"
-    :class="active ? 'bg-zinc-50 dark:bg-white/5' : ''"
+    :class="active ? 'bg-accent-soft' : ''"
   >
     <button
       type="button"
@@ -49,7 +49,7 @@ function play() {
         </span>
       </div>
       <div class="min-w-0 flex-1">
-        <div class="type-title truncate" :class="active ? 'text-emerald-600 dark:text-emerald-300' : ''">
+        <div class="type-title truncate" :class="active ? 'text-accent' : ''">
           {{ result.title }}
         </div>
         <div class="truncate text-[0.74rem] text-artist">
