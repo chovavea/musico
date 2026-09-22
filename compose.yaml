@@ -4,6 +4,20 @@
 name: musico-dev
 
 services:
+  # 初始化 bind mount 本身的权限；镜像中的 chown 会被挂载遮住。
+  # 此一次性容器不读取 .env、不联网，也不递归修改已有音乐文件。
+  music-init:
+    build: .
+    image: musico:evolve
+    user: "0:0"
+    entrypoint: ["sh", "-c"]
+    command: ["chown 1000:1000 /app/data/music && chmod u+rwx /app/data/music"]
+    volumes:
+      - ./data/music:/app/data/music
+    network_mode: none
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
   musico:
     build: .
     # 测试/开发专用镜像标签：正式镜像 musico:latest 由部署目录单独构建，
@@ -40,6 +54,8 @@ services:
       - ./data/music:/app/data/music
       - ./server/app/download_sources:/app/download_sources:ro
     depends_on:
+      music-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:

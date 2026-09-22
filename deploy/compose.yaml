@@ -12,6 +12,19 @@
 name: musico
 
 services:
+  # 仅在启动前修复曲库挂载目录权限，不给应用进程 root 权限。
+  music-init:
+    image: musico:latest
+    pull_policy: missing
+    user: "0:0"
+    entrypoint: ["sh", "-c"]
+    command: ["chown 1000:1000 /app/data/music && chmod u+rwx /app/data/music"]
+    volumes:
+      - ./data/music:/app/data/music
+    network_mode: none
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
   musico:
     image: musico:latest
     pull_policy: missing
@@ -42,6 +55,8 @@ services:
       #   docker cp musico-app:/app/configs ./configs
       # - ./configs:/app/configs:ro
     depends_on:
+      music-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:

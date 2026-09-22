@@ -45,7 +45,8 @@ ENV DOWNLOAD_SOURCE_CONFIG=/app/configs/download_sources.yaml DOWNLOAD_SOURCE_DI
 ENV MUSIC_LIBRARY_DIR=/app/data/music
 # 非 root 运行：容器逃逸需要第二个漏洞，且写入 bind mount（音乐库）的文件
 # 属于 uid 1000，而不是宿主上的 root。数据目录先建好再交给 appuser，
-# 这样不带卷直接 docker run 也不会在 mkdir 时失败。
+# 这样不带卷直接 docker run 也不会在 mkdir 时失败；Compose 的 bind mount
+# 则由一次性的 music-init 容器修复挂载目录权限，应用进程仍保持非 root。
 RUN adduser -D -u 1000 appuser \
     && mkdir -p /app/data/music \
     && chown -R appuser:appuser /app
