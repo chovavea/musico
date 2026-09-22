@@ -459,9 +459,10 @@ async def _hedged_attempts(
                 launch()
                 continue
 
-            completed: list[tuple[int, _AttemptSpec, float, _AttemptResult, bool]] = []
-            for task in done:
-                spec, started, index = running.pop(task)
+            # Keep unprocessed completions owned by `running`: an early return
+            # must still close their already-open streams in the finally block.
+            for task in sorted(done, key=lambda task: running[task][2]):
+                spec, started, _index = running.pop(task)
                 cancelled = False
                 try:
                     result = task.result()
@@ -470,10 +471,6 @@ async def _hedged_attempts(
                     cancelled = True
                 except Exception as exc:
                     result = _AttemptResult(error=type(exc).__name__)
-                completed.append((index, spec, started, result, cancelled))
-            completed.sort(key=lambda item: item[0])
-
-            for _index, spec, started, result, cancelled in completed:
                 if cancelled:
                     if result.response is not None:
                         await _discard_response(result.response)
