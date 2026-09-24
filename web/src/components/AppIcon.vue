@@ -26,6 +26,8 @@ withDefaults(
       | "waveform"
       | "queue"
       | "lyrics"
+      | "repeat"
+      | "repeat-one"
       | "play-outline";
     size?: number;
   }>(),
@@ -209,6 +211,23 @@ withDefaults(
       stroke-width="1.8"
       stroke-linecap="round"
     />
+    <template v-else-if="name === 'repeat' || name === 'repeat-one'">
+      <path
+        d="M17 3.2 20.4 6.4 17 9.6M20.2 6.4H9.4A3.6 3.6 0 0 0 5.8 10v2.2M7 20.8 3.6 17.6 7 14.4M3.8 17.6h10.8a3.6 3.6 0 0 0 3.6-3.6V11.8"
+        stroke="currentColor"
+        stroke-width="1.7"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path
+        v-if="name === 'repeat-one'"
+        d="M12 9.4v5.4M10.6 10.5 12 9.4"
+        stroke="currentColor"
+        stroke-width="1.7"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </template>
     <template v-else-if="name === 'play-outline'">
       <circle cx="12" cy="12" r="8.2" stroke="currentColor" stroke-width="1.5" />
       <path d="m10 8.8 6 3.2-6 3.2V8.8Z" fill="currentColor" />

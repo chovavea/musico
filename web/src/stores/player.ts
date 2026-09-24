@@ -55,6 +55,28 @@ function sameAudioSource(audio: HTMLAudioElement, item: RankItem, downloadOnly: 
   return audio.src === expected;
 }
 
+export type RepeatMode = "off" | "all" | "one";
+
+const REPEAT_MODE_KEY = "musico.repeat-mode";
+
+function readRepeatMode(): RepeatMode {
+  try {
+    const value = globalThis.localStorage?.getItem(REPEAT_MODE_KEY);
+    if (value === "all" || value === "one") return value;
+  } catch {
+    // 无痕模式或禁用存储时，循环只在本次会话里生效。
+  }
+  return "off";
+}
+
+function writeRepeatMode(mode: RepeatMode) {
+  try {
+    globalThis.localStorage?.setItem(REPEAT_MODE_KEY, mode);
+  } catch {
+    // 写不进去就留在内存里，下一次打开再回到顺序播放。
+  }
+}
+
 export const usePlayerStore = defineStore("player", {
   state: () => ({
     current: null as RankItem | null,
@@ -64,6 +86,7 @@ export const usePlayerStore = defineStore("player", {
     audio: null as HTMLAudioElement | null,
     failed: false,
     failStreak: 0,
+    failOrigin: -1,
     currentTime: 0,
     duration: 0,
     officialBound: false,
@@ -75,6 +98,7 @@ export const usePlayerStore = defineStore("player", {
     loadState: "idle" as "idle" | "loading" | "ready" | "cancelled" | "failed",
     wantsPlayback: false,
     advanceOnFail: false,
+    repeatMode: readRepeatMode() as RepeatMode,
     officialTimer: null as ReturnType<typeof setTimeout> | null,
     streamRetries: 0,
     streamRetryTimer: null as ReturnType<typeof setTimeout> | null,
@@ -83,8 +107,14 @@ export const usePlayerStore = defineStore("player", {
     canPreview: () => previewPlayable,
     progress: (state) => (state.duration > 0 ? state.currentTime / state.duration : 0),
     hasQueue: (state) => state.queue.length > 1,
-    hasPrev: (state) => state.index > 0,
-    hasNext: (state) => state.index >= 0 && state.index + 1 < state.queue.length,
+    hasPrev: (state) =>
+      state.index >= 0 &&
+      state.queue.length > 0 &&
+      (state.repeatMode === "all" || state.index > 0),
+    hasNext: (state) =>
+      state.index >= 0 &&
+      state.queue.length > 0 &&
+      (state.repeatMode === "all" || state.index + 1 < state.queue.length),
     loadCancelled: (state) => state.loadState === "cancelled",
     usingOfficial: (state) => Boolean(state.current && state.playbackMode === "official"),
   },
@@ -101,7 +131,7 @@ export const usePlayerStore = defineStore("player", {
         }
         this.playing = false;
         this.currentTime = 0;
-        this.next();
+        this.finishCurrent();
       });
       audio.addEventListener("error", () => {
         if (!this.current || this.usingOfficial || !this.wantsPlayback) {
@@ -128,6 +158,7 @@ export const usePlayerStore = defineStore("player", {
         this.playing = true;
         this.failed = false;
         this.failStreak = 0;
+        this.failOrigin = -1;
         this.streamRetries = 0;
       });
       audio.addEventListener("timeupdate", () => {
@@ -200,6 +231,7 @@ export const usePlayerStore = defineStore("player", {
         this.playing = true;
         this.failed = false;
         this.failStreak = 0;
+        this.failOrigin = -1;
         const duration = official.duration;
         this.duration = Number.isFinite(duration) ? duration : this.duration;
       });
@@ -227,7 +259,7 @@ export const usePlayerStore = defineStore("player", {
         }
         this.playing = false;
         this.currentTime = 0;
-        this.next();
+        this.finishCurrent();
       });
       official.on("timeupdate", (event: QQOfficialEvent) => {
         if (!this.usingOfficial || this.officialPlaybackId !== this.playbackId) {
@@ -257,6 +289,7 @@ export const usePlayerStore = defineStore("player", {
     },
     play(item: RankItem, queue?: RankItem[], options?: { advanceOnFail?: boolean }) {
       this.failStreak = 0;
+      this.failOrigin = -1;
       this.advanceOnFail = Boolean(options?.advanceOnFail);
       this.queue = queue?.length ? queue : [item];
       this.index = this.queue.findIndex((entry) => sameTrack(entry, item));
@@ -371,10 +404,14 @@ export const usePlayerStore = defineStore("player", {
       if (this.playbackId !== playbackId || this.failed || !this.wantsPlayback) return;
       const current = this.current;
       if (current) usePreviewFailureStore().record(current);
-      // A chart play button keeps walking the queue after the whole preview
-      // ladder fails. Clicking one song stays put so the failure stays visible.
-      if (this.advanceOnFail && this.index + 1 < this.queue.length) {
-        this.next();
+      // 顺序播放和列表循环在整段试听失败后换下一首。列表循环到末尾会回到
+      // 队列开头；绕回到这一轮第一首失败的歌就停住。单曲循环留在当前这首。
+      this.failStreak += 1;
+      if (this.failOrigin < 0) this.failOrigin = this.index;
+      const wrap = this.repeatMode === "all";
+      const nextIndex = this.index + 1 < this.queue.length ? this.index + 1 : wrap ? 0 : -1;
+      const skipToNext = this.repeatMode !== "one" || this.advanceOnFail;
+      if (skipToNext && nextIndex >= 0 && nextIndex !== this.failOrigin && this.step(1, wrap)) {
         return;
       }
       this.playing = false;
@@ -382,7 +419,6 @@ export const usePlayerStore = defineStore("player", {
       this.loadState = "failed";
       this.failed = true;
       this.wantsPlayback = false;
-      this.failStreak += 1;
     },
     async startOfficial(item: RankItem, playbackId: number) {
       try {
@@ -421,6 +457,7 @@ export const usePlayerStore = defineStore("player", {
       }
       if (this.failed) {
         this.failStreak = 0;
+        this.failOrigin = -1;
         this.start(this.current);
         return;
       }
@@ -444,25 +481,37 @@ export const usePlayerStore = defineStore("player", {
       }
       this.playAudio(this.playbackId);
     },
-    next() {
-      if (this.index + 1 >= this.queue.length) {
+    cycleRepeat() {
+      const order: RepeatMode[] = ["off", "all", "one"];
+      const next = order[(order.indexOf(this.repeatMode) + 1) % order.length] ?? "off";
+      this.repeatMode = next;
+      writeRepeatMode(next);
+    },
+    finishCurrent() {
+      if (this.repeatMode === "one" && this.current) {
+        this.start(this.current);
         return;
       }
-      this.index += 1;
-      const item = this.queue[this.index];
-      if (item) {
-        this.start(item);
+      this.next();
+    },
+    step(delta: number, wrap: boolean): boolean {
+      if (this.queue.length === 0 || this.index < 0) return false;
+      let nextIndex = this.index + delta;
+      if (nextIndex < 0 || nextIndex >= this.queue.length) {
+        if (!wrap) return false;
+        nextIndex = (nextIndex + this.queue.length) % this.queue.length;
       }
+      const item = this.queue[nextIndex];
+      if (!item) return false;
+      this.index = nextIndex;
+      this.start(item);
+      return true;
+    },
+    next() {
+      this.step(1, this.repeatMode === "all");
     },
     prev() {
-      if (this.index <= 0) {
-        return;
-      }
-      this.index -= 1;
-      const item = this.queue[this.index];
-      if (item) {
-        this.start(item);
-      }
+      this.step(-1, this.repeatMode === "all");
     },
     seek(ratio: number) {
       const nextRatio = Math.min(1, Math.max(0, ratio));

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { comingSoon } from "../lib/coming-soon";
+import { useLyrics } from "../composables/useLyrics";
+import { coverImageUrl } from "../lib/cover-image";
 import { formatClock } from "../lib/format";
 import { usePlayerStore } from "../stores/player";
 import { useThemeStore } from "../stores/theme";
@@ -10,6 +11,7 @@ import LyricsPanel from "./LyricsPanel.vue";
 
 const player = usePlayerStore();
 const theme = useThemeStore();
+const lyric = useLyrics();
 const percent = computed(() => Math.round(player.progress * 1000) / 10);
 const dragging = ref(false);
 const lyricsOpen = ref(false);
@@ -23,6 +25,22 @@ const statusText = computed(() => {
   if (player.usingOfficial) return "QQ 官方试听";
   return player.current?.artist ?? "";
 });
+const barText = computed(() => {
+  if (player.failed || player.loading || player.loadCancelled || lyricsOpen.value) {
+    return statusText.value;
+  }
+  if (lyric.status.value === "ready" && lyric.activeText.value) return lyric.activeText.value;
+  return statusText.value;
+});
+const coverBackdrop = computed(() =>
+  lyricsOpen.value ? coverImageUrl(player.current?.cover_url, 500) : null,
+);
+const repeatLabel = computed(() => {
+  if (player.repeatMode === "one") return "单曲循环";
+  if (player.repeatMode === "all") return "列表循环";
+  return "顺序播放";
+});
+const repeatIcon = computed(() => (player.repeatMode === "one" ? "repeat-one" : "repeat"));
 const toggleLabel = computed(() => {
   if (player.loading) return "取消加载";
   if (player.failed) return "重试播放";
@@ -76,6 +94,11 @@ function seekBy(delta: number) {
   player.seek(Math.min(1, Math.max(0, player.progress + delta)));
 }
 
+function toggleLyrics() {
+  if (!player.current) return;
+  lyricsOpen.value = !lyricsOpen.value;
+}
+
 function onSeekKey(event: KeyboardEvent) {
   if (!player.current || !player.duration) return;
   if (event.key === "ArrowRight") {
@@ -99,10 +122,14 @@ function onSeekKey(event: KeyboardEvent) {
     v-if="theme.isGlaze"
     ref="root"
     class="gz-player"
+    :class="lyricsOpen ? 'is-lyrics' : ''"
     aria-label="播放器"
   >
-    <LyricsPanel :open="lyricsOpen" @close="lyricsOpen = false" />
+    <div v-if="coverBackdrop" class="player-cover-bg" aria-hidden="true">
+      <img :src="coverBackdrop" alt="" />
+    </div>
     <div
+      v-if="!lyricsOpen"
       role="slider"
       tabindex="0"
       class="absolute left-3.5 right-3.5 top-0 z-10 h-5 cursor-pointer touch-none"
@@ -122,8 +149,30 @@ function onSeekKey(event: KeyboardEvent) {
         <span :style="{ width: `${percent}%` }" />
       </span>
     </div>
-    <div class="gz-player-body">
-      <div class="flex min-w-0 items-center gap-3">
+    <LyricsPanel v-if="lyricsOpen" @close="lyricsOpen = false" />
+    <div
+      v-if="lyricsOpen"
+      role="slider"
+      tabindex="0"
+      class="gz-seek cursor-pointer touch-none"
+      :class="!player.duration ? 'cursor-default' : ''"
+      aria-label="播放进度"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="Math.round(player.progress * 100)"
+      :aria-disabled="!player.duration"
+      @pointerdown="onSeekPointer"
+      @pointermove="onSeekPointer"
+      @pointerup="onSeekEnd"
+      @pointercancel="onSeekEnd"
+      @keydown="onSeekKey"
+    >
+      <span class="gz-seek-track pointer-events-none">
+        <span :style="{ width: `${percent}%` }" />
+      </span>
+    </div>
+    <div class="gz-player-body" :class="lyricsOpen ? 'is-dock' : ''">
+      <div v-if="!lyricsOpen" class="flex min-w-0 items-center gap-3">
         <CoverImage
           :src="player.current?.cover_url"
           :size="150"
@@ -132,53 +181,58 @@ function onSeekKey(event: KeyboardEvent) {
         />
         <div class="min-w-0">
           <div class="gz-title">{{ player.current?.title }}</div>
-          <div class="gz-artist" :class="player.failed ? 'text-rose-400' : ''">
-            {{ statusText }}
-          </div>
+          <button
+            type="button"
+            class="gz-artist block w-full truncate bg-transparent p-0 text-left"
+            :class="player.failed ? 'text-rose-400' : ''"
+            aria-label="歌词"
+            :aria-pressed="lyricsOpen"
+            @click="toggleLyrics"
+          >
+            {{ barText }}
+          </button>
         </div>
       </div>
-      <div class="flex items-center gap-1">
-        <button
-          type="button"
-          class="gz-ghost gz-player-skip"
-          aria-label="上一首"
-          :disabled="!player.hasPrev"
-          @click="player.prev()"
-        >
-          <AppIcon name="chevron-left" :size="20" />
-        </button>
-        <button type="button" class="gz-ghost" :aria-label="toggleLabel" @click="player.toggle()">
-          <AppIcon :name="player.loading ? 'spinner' : player.playing ? 'pause' : 'play'" :size="20" />
-        </button>
-        <button
-          type="button"
-          class="gz-ghost gz-player-skip"
-          aria-label="下一首"
-          :disabled="!player.hasNext"
-          @click="player.next()"
-        >
-          <AppIcon name="chevron-right" :size="20" />
-        </button>
-        <button
-          type="button"
-          class="gz-ghost"
-          aria-label="歌词"
-          :aria-pressed="lyricsOpen"
-          :disabled="!player.current"
-          @click="lyricsOpen = !lyricsOpen"
-        >
-          <AppIcon name="lyrics" :size="18" />
-        </button>
-        <button
-          type="button"
-          class="gz-ghost gz-player-queue-mobile"
-          aria-label="播放列表"
-          @click="comingSoon('播放列表')"
-        >
-          <AppIcon name="queue" :size="18" />
-        </button>
+      <span v-else class="tabular shrink-0 text-xs text-[color:var(--gz-muted)]">
+        {{ formatClock(player.currentTime) }} / {{ formatClock(player.duration) }}
+      </span>
+      <div class="gz-player-controls flex items-center justify-end gap-1">
+        <div class="flex items-center">
+          <button
+            type="button"
+            class="gz-ghost gz-player-skip"
+            aria-label="上一首"
+            :disabled="!player.hasPrev"
+            @click="player.prev()"
+          >
+            <AppIcon name="chevron-left" :size="20" />
+          </button>
+          <button type="button" class="gz-play" :aria-label="toggleLabel" @click="player.toggle()">
+            <AppIcon :name="player.loading ? 'spinner' : player.playing ? 'pause' : 'play'" :size="18" />
+          </button>
+          <button
+            type="button"
+            class="gz-ghost gz-player-skip"
+            aria-label="下一首"
+            :disabled="!player.hasNext"
+            @click="player.next()"
+          >
+            <AppIcon name="chevron-right" :size="20" />
+          </button>
+          <button
+            type="button"
+            class="gz-ghost gz-player-skip"
+            :class="player.repeatMode !== 'off' ? 'is-on' : ''"
+            :aria-label="repeatLabel"
+            :aria-pressed="player.repeatMode !== 'off'"
+            :title="repeatLabel"
+            @click="player.cycleRepeat()"
+          >
+            <AppIcon :name="repeatIcon" :size="18" />
+          </button>
+        </div>
       </div>
-      <div class="gz-player-extra">
+      <div v-if="!lyricsOpen" class="gz-player-extra">
         <span class="tabular text-xs text-[color:var(--gz-muted)]">
           {{ formatClock(player.currentTime) }} / {{ formatClock(player.duration) }}
         </span>
@@ -191,19 +245,20 @@ function onSeekKey(event: KeyboardEvent) {
         >
           <AppIcon name="external" :size="17" />
         </button>
-        <button type="button" class="gz-ghost" aria-label="播放列表" @click="comingSoon('播放列表')">
-          <AppIcon name="queue" :size="18" />
-        </button>
       </div>
     </div>
   </footer>
   <footer
     v-else
     ref="root"
-    class="fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 bg-white/95 pb-[env(safe-area-inset-bottom,0px)] backdrop-blur-md dark:border-white/10 dark:bg-zinc-950/95"
+    class="fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 pb-[env(safe-area-inset-bottom,0px)] backdrop-blur-md dark:border-white/10"
+    :class="lyricsOpen ? 'is-lyrics bg-white/80 dark:bg-zinc-950/80' : 'bg-white/95 dark:bg-zinc-950/95'"
     aria-label="播放器"
   >
-    <LyricsPanel :open="lyricsOpen" @close="lyricsOpen = false" />
+    <div v-if="coverBackdrop" class="player-cover-bg" aria-hidden="true">
+      <img :src="coverBackdrop" alt="" />
+    </div>
+    <LyricsPanel v-if="lyricsOpen" @close="lyricsOpen = false" />
     <div
       role="slider"
       tabindex="0"
@@ -228,7 +283,7 @@ function onSeekKey(event: KeyboardEvent) {
       <div
         class="grid min-h-[60px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-3"
       >
-        <div class="flex min-w-0 items-center gap-3">
+        <div v-if="!lyricsOpen" class="flex min-w-0 items-center gap-3">
           <CoverImage
             :src="player.current?.cover_url"
             :size="150"
@@ -237,54 +292,66 @@ function onSeekKey(event: KeyboardEvent) {
           />
           <div class="min-w-0">
             <div class="type-title truncate">{{ player.current?.title }}</div>
-            <div class="truncate text-[0.74rem]" :class="player.failed ? 'text-rose-600 dark:text-rose-300' : 'text-artist'">
-              {{ statusText }}
-            </div>
+            <button
+              type="button"
+              class="block w-full truncate bg-transparent p-0 text-left text-[0.74rem]"
+              :class="player.failed ? 'text-rose-600 dark:text-rose-300' : 'text-artist'"
+              aria-label="歌词"
+              :aria-pressed="lyricsOpen"
+              @click="toggleLyrics"
+            >
+              {{ barText }}
+            </button>
+          </div>
+        </div>
+        <span v-else class="tabular text-xs text-secondary">
+          {{ formatClock(player.currentTime) }} / {{ formatClock(player.duration) }}
+        </span>
+
+        <div class="flex items-center justify-end gap-1 sm:gap-2">
+          <div class="flex items-center">
+            <button
+              type="button"
+              class="grid h-11 w-11 place-items-center rounded-full text-zinc-600 hover:bg-zinc-100 disabled:cursor-default disabled:opacity-30 dark:text-zinc-300 dark:hover:bg-white/10"
+              aria-label="上一首"
+              :disabled="!player.hasPrev"
+              @click="player.prev()"
+            >
+              <AppIcon name="chevron-left" :size="20" />
+            </button>
+            <button
+              type="button"
+              class="grid h-11 w-11 place-items-center rounded-full bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
+              :aria-label="toggleLabel"
+              @click="player.toggle()"
+            >
+              <AppIcon :name="player.loading ? 'spinner' : player.playing ? 'pause' : 'play'" :size="18" />
+            </button>
+            <button
+              type="button"
+              class="grid h-11 w-11 place-items-center rounded-full text-zinc-600 hover:bg-zinc-100 disabled:cursor-default disabled:opacity-30 dark:text-zinc-300 dark:hover:bg-white/10"
+              aria-label="下一首"
+              :disabled="!player.hasNext"
+              @click="player.next()"
+            >
+              <AppIcon name="chevron-right" :size="20" />
+            </button>
+            <button
+              type="button"
+              class="grid h-11 w-11 place-items-center rounded-full text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/10"
+              :class="player.repeatMode !== 'off' ? 'text-zinc-900 ring-1 ring-zinc-300 dark:text-white dark:ring-white/20' : ''"
+              :aria-label="repeatLabel"
+              :aria-pressed="player.repeatMode !== 'off'"
+              :title="repeatLabel"
+              @click="player.cycleRepeat()"
+            >
+              <AppIcon :name="repeatIcon" :size="18" />
+            </button>
           </div>
         </div>
 
-        <div class="flex items-center gap-1 sm:gap-2">
-          <button
-            type="button"
-            class="grid h-11 w-11 place-items-center rounded-full hover:bg-zinc-100 disabled:cursor-default disabled:opacity-30 dark:hover:bg-white/10"
-            aria-label="上一首"
-            :disabled="!player.hasPrev"
-            @click="player.prev()"
-          >
-            <AppIcon name="chevron-left" :size="20" />
-          </button>
-          <button
-            type="button"
-            class="grid h-11 w-11 place-items-center rounded-full bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
-            :aria-label="toggleLabel"
-            @click="player.toggle()"
-          >
-            <AppIcon :name="player.loading ? 'spinner' : player.playing ? 'pause' : 'play'" :size="19" />
-          </button>
-          <button
-            type="button"
-            class="grid h-11 w-11 place-items-center rounded-full hover:bg-zinc-100 disabled:cursor-default disabled:opacity-30 dark:hover:bg-white/10"
-            :class="lyricsOpen ? 'bg-zinc-100 dark:bg-white/10' : ''"
-            aria-label="歌词"
-            :aria-pressed="lyricsOpen"
-            :disabled="!player.current"
-            @click="lyricsOpen = !lyricsOpen"
-          >
-            <AppIcon name="lyrics" :size="18" />
-          </button>
-          <button
-            type="button"
-            class="grid h-11 w-11 place-items-center rounded-full hover:bg-zinc-100 disabled:cursor-default disabled:opacity-30 dark:hover:bg-white/10"
-            aria-label="下一首"
-            :disabled="!player.hasNext"
-            @click="player.next()"
-          >
-            <AppIcon name="chevron-right" :size="20" />
-          </button>
-        </div>
-
         <div class="hidden min-w-0 items-center justify-end gap-3 sm:flex">
-          <span class="tabular text-xs text-secondary">
+          <span v-if="!lyricsOpen" class="tabular text-xs text-secondary">
             {{ formatClock(player.currentTime) }} / {{ formatClock(player.duration) }}
           </span>
           <button
@@ -301,3 +368,52 @@ function onSeekKey(event: KeyboardEvent) {
     </div>
   </footer>
 </template>
+
+<style scoped>
+.is-lyrics {
+  overflow: hidden;
+  color: #fff;
+}
+
+.is-lyrics .gz-ghost,
+.is-lyrics .text-secondary,
+.is-lyrics .text-zinc-600,
+.is-lyrics .text-zinc-500,
+.is-lyrics .text-artist {
+  color: rgb(255 255 255 / 0.9);
+}
+
+.is-lyrics > :not(.player-cover-bg) {
+  position: relative;
+  z-index: 1;
+}
+
+.player-cover-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.player-cover-bg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  opacity: 0.32;
+  transition: opacity 480ms ease;
+}
+
+.player-cover-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 0.28) 0%,
+    rgb(0 0 0 / 0.42) 46%,
+    rgb(0 0 0 / 0.62) 100%
+  );
+}
+</style>

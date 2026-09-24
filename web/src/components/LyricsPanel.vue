@@ -1,164 +1,309 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
-import { lyrics } from "../api";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { isCreditLine, useLyrics } from "../composables/useLyrics";
 import { usePlayerStore } from "../stores/player";
-import { useThemeStore } from "../stores/theme";
 import type { LyricLine } from "../types";
 import AppIcon from "./AppIcon.vue";
+import CoverImage from "./CoverImage.vue";
 
-const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 
 const player = usePlayerStore();
-const theme = useThemeStore();
-const lines = ref<LyricLine[]>([]);
-const synced = ref(false);
-const status = ref<"idle" | "loading" | "ready" | "empty" | "error">("idle");
-const scroller = ref<HTMLElement | null>(null);
-let requestId = 0;
+const { lines, status, activeIndex, reload } = useLyrics();
+const view = ref<HTMLElement | null>(null);
+const track = ref<HTMLElement | null>(null);
+const offset = ref(0);
+const follow = ref(true);
+let resumeTimer = 0;
+let resizeObserver: ResizeObserver | null = null;
 
-const activeIndex = computed(() => {
-  if (!synced.value) return -1;
-  const ms = player.currentTime * 1000 + 150;
-  let index = -1;
-  lines.value.forEach((line, lineIndex) => {
-    if (line.time_ms != null && line.time_ms <= ms) index = lineIndex;
-  });
-  return index;
-});
-
-const message = computed(() => {
+const message = () => {
   if (status.value === "loading") return "正在加载歌词";
   if (status.value === "error") return "歌词暂时获取失败";
   if (status.value === "empty") return "暂无歌词";
   return "";
-});
+};
 
-async function load() {
-  const item = player.current;
-  const id = ++requestId;
-  if (!item) {
-    lines.value = [];
-    status.value = "idle";
-    return;
+function tone(index: number): string {
+  const credit = isCreditLine(lines.value[index]?.text ?? "", index === 0);
+  const current = activeIndex.value;
+  let distanceClass = "is-far";
+  if (current < 0) distanceClass = index === 0 ? "is-now" : "is-far";
+  else {
+    const distance = Math.abs(index - current);
+    distanceClass = distance === 0 ? "is-now" : distance === 1 ? "is-near" : "is-far";
   }
-  status.value = "loading";
-  try {
-    const response = await lyrics(item);
-    if (id !== requestId) return;
-    if (response.code !== 0) {
-      lines.value = [];
-      status.value = "error";
-      return;
-    }
-    lines.value = response.data.lines ?? [];
-    synced.value = Boolean(response.data.synced);
-    status.value = lines.value.length ? "ready" : "empty";
-  } catch {
-    if (id !== requestId) return;
-    lines.value = [];
-    status.value = "error";
-  }
+  return credit ? `${distanceClass} is-credit` : distanceClass;
+}
+
+async function align() {
+  if (!follow.value) return;
+  await nextTick();
+  const viewport = view.value;
+  const column = track.value;
+  if (!viewport || !column) return;
+  const focus = activeIndex.value < 0 ? 0 : activeIndex.value;
+  const line = column.querySelector<HTMLElement>(`[data-line="${focus}"]`);
+  if (!line) return;
+  const anchor = viewport.clientHeight * 0.38;
+  const center = line.offsetTop + line.offsetHeight / 2;
+  offset.value = anchor - center;
+}
+
+function pauseFollow() {
+  follow.value = false;
+  window.clearTimeout(resumeTimer);
+}
+
+function resumeFollowSoon() {
+  window.clearTimeout(resumeTimer);
+  resumeTimer = window.setTimeout(() => {
+    follow.value = true;
+    void align();
+  }, 4000);
 }
 
 function seekLine(line: LyricLine) {
   if (line.time_ms == null || !player.duration) return;
   player.seek(line.time_ms / 1000 / player.duration);
+  follow.value = true;
+  window.clearTimeout(resumeTimer);
+  void align();
 }
 
-watch(
-  () => [props.open, player.current?.platform, player.current?.external_id] as const,
-  ([open]) => {
-    if (open) void load();
-  },
-);
+watch(activeIndex, () => {
+  void align();
+});
+watch(lines, () => {
+  offset.value = 0;
+  void align();
+});
 
-watch(activeIndex, async (index) => {
-  if (!props.open || index < 0) return;
-  await nextTick();
-  const root = scroller.value;
-  const line = root?.querySelector<HTMLElement>(`[data-line="${index}"]`);
-  if (!root || !line) return;
-  const top = line.offsetTop - root.clientHeight / 2 + line.clientHeight / 2;
-  root.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+onMounted(() => {
+  void align();
+  if (typeof ResizeObserver === "undefined" || !view.value) return;
+  resizeObserver = new ResizeObserver(() => {
+    void align();
+  });
+  resizeObserver.observe(view.value);
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  window.clearTimeout(resumeTimer);
 });
 </script>
 
 <template>
-  <section
-    v-if="open && player.current"
-    class="absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(46vh,28rem)] flex-col overflow-hidden rounded-2xl shadow-lg"
-    :class="
-      theme.isGlaze
-        ? 'bg-[var(--gz-player)] text-[color:var(--gz-text)] ring-1 ring-[color:var(--gz-line)]'
-        : 'bg-white/95 text-zinc-900 ring-1 ring-zinc-200 backdrop-blur-md dark:bg-zinc-950/95 dark:text-zinc-100 dark:ring-white/10'
-    "
-    aria-label="歌词"
-  >
-    <header class="flex items-center gap-3 px-4 pb-1 pt-3">
-      <div class="min-w-0 flex-1">
-        <div class="truncate text-sm font-semibold">{{ player.current.title }}</div>
-        <div
-          class="truncate text-xs"
-          :class="theme.isGlaze ? 'text-[color:var(--gz-muted)]' : 'text-secondary'"
-        >
+  <div v-if="player.current" class="lyric-stage">
+    <div class="lyric-side">
+      <CoverImage
+        :src="player.current.cover_url"
+        :size="500"
+        :alt="player.current.title"
+        class="lyric-cover"
+      />
+      <div class="min-w-0">
+        <div class="truncate text-[0.95rem] font-semibold leading-tight">
+          {{ player.current.title }}
+        </div>
+        <div class="mt-0.5 truncate text-xs text-white/80">
           {{ player.current.artist }}
         </div>
       </div>
-      <button
-        type="button"
-        class="grid h-9 w-9 shrink-0 place-items-center rounded-full hover:bg-black/5 dark:hover:bg-white/10"
-        aria-label="关闭歌词"
-        @click="emit('close')"
-      >
-        <AppIcon name="close" :size="16" />
-      </button>
-    </header>
+    </div>
     <div
-      v-if="message"
-      class="grid min-h-36 flex-1 place-items-center px-6 pb-8 text-sm"
-      :class="theme.isGlaze ? 'text-[color:var(--gz-muted)]' : 'text-secondary'"
+      ref="view"
+      class="lyric-view"
+      @pointerdown="pauseFollow"
+      @pointerup="resumeFollowSoon"
+      @pointercancel="resumeFollowSoon"
     >
-      <div class="text-center">
-        <p>{{ message }}</p>
+      <p
+        v-if="message()"
+        class="absolute inset-0 grid place-items-center px-6 text-center text-sm text-white/75"
+      >
+        <span>
+          {{ message() }}
+          <button
+            v-if="status === 'error'"
+            type="button"
+            class="mt-2 block w-full underline"
+            @click="reload()"
+          >
+            重试
+          </button>
+        </span>
+      </p>
+      <div
+        v-else
+        ref="track"
+        class="lyric-track"
+        :style="{ transform: `translate3d(0, ${offset}px, 0)` }"
+      >
         <button
-          v-if="status === 'error'"
+          v-for="(line, index) in lines"
+          :key="`${line.time_ms ?? 'plain'}-${index}`"
           type="button"
-          class="mt-3 underline"
-          @click="load()"
+          class="lyric-line"
+          :class="tone(index)"
+          :data-line="index"
+          :disabled="line.time_ms == null || !player.duration"
+          @click="seekLine(line)"
         >
-          重试
+          <span class="block">{{ line.text }}</span>
+          <span v-if="line.translation" class="lyric-trans">{{ line.translation }}</span>
         </button>
       </div>
     </div>
-    <div v-else ref="scroller" class="min-h-0 flex-1 overflow-y-auto px-6 pb-8">
-      <div class="h-[38%]" aria-hidden="true" />
-      <button
-        v-for="(line, index) in lines"
-        :key="`${line.time_ms ?? 'plain'}-${index}`"
-        type="button"
-        class="mx-auto block w-full max-w-lg py-2 text-center transition-colors"
-        :class="
-          activeIndex === index
-            ? 'text-[1.15rem] font-semibold'
-            : theme.isGlaze
-              ? 'text-sm text-[color:var(--gz-muted)]'
-              : 'text-sm text-zinc-400 dark:text-zinc-500'
-        "
-        :data-line="index"
-        :data-active="activeIndex === index ? 'true' : 'false'"
-        :disabled="line.time_ms == null || !player.duration"
-        @click="seekLine(line)"
-      >
-        <span class="block leading-snug">{{ line.text }}</span>
-        <span
-          v-if="line.translation"
-          class="mt-1 block text-xs font-normal leading-snug opacity-70"
-        >
-          {{ line.translation }}
-        </span>
-      </button>
-      <div class="h-[38%]" aria-hidden="true" />
-    </div>
-  </section>
+    <button type="button" class="lyric-close" aria-label="关闭歌词" @click="emit('close')">
+      <AppIcon name="close" :size="16" />
+    </button>
+  </div>
 </template>
+
+<style scoped>
+.lyric-stage {
+  position: relative;
+  color: #fff;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  height: min(46vh, 24rem);
+  min-height: 13rem;
+  padding: 12px 16px 4px;
+}
+
+.lyric-side {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding-right: 2rem;
+}
+
+.lyric-cover {
+  height: 2.75rem;
+  width: 2.75rem;
+  flex-shrink: 0;
+  border-radius: 0.8rem;
+  object-fit: cover;
+}
+
+.lyric-view {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 16%,
+    #000 76%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 16%, #000 76%, transparent 100%);
+}
+
+.lyric-track {
+  transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.lyric-line {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 0.42rem 0.25rem;
+  text-align: center;
+  color: #fff;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  opacity: 0.58;
+  transition: opacity 280ms ease, font-size 280ms ease;
+}
+
+.lyric-line.is-near {
+  opacity: 0.8;
+}
+
+.lyric-line.is-now {
+  opacity: 1;
+  font-size: 1.22rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.lyric-line.is-credit {
+  font-size: 0.78rem;
+  font-weight: 450;
+  opacity: 0.7;
+}
+
+.lyric-line.is-credit.is-now {
+  font-size: 0.86rem;
+  font-weight: 550;
+  opacity: 0.72;
+}
+
+.lyric-line:disabled {
+  cursor: default;
+}
+
+.lyric-trans {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.35;
+  opacity: 0.72;
+}
+
+.lyric-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  height: 2rem;
+  width: 2rem;
+  place-items: center;
+  border-radius: 999px;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.lyric-close:hover {
+  background: rgb(127 127 127 / 0.16);
+  opacity: 1;
+}
+
+@media (min-width: 720px) {
+  .lyric-stage {
+    grid-template-columns: 8.5rem minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+    height: min(40vh, 20rem);
+    padding: 16px 18px 8px;
+  }
+
+  .lyric-side {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 0 0 12% 0;
+  }
+
+  .lyric-cover {
+    height: 7.5rem;
+    width: 7.5rem;
+    border-radius: 1.1rem;
+  }
+
+  .lyric-line {
+    text-align: left;
+    padding-left: 0.15rem;
+  }
+}
+</style>

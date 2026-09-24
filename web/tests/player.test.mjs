@@ -120,6 +120,11 @@ beforeEach(async () => {
   FakeAudio.results = [];
   FakeOfficial.instance = null;
   globalThis.sessionStorage?.clear();
+  try {
+    globalThis.localStorage?.removeItem("musico.repeat-mode");
+  } catch {
+    // 测试环境没有可用的 localStorage 时，循环模式只留在内存里。
+  }
   server.moduleGraph.invalidateAll();
   setActivePinia(createPinia());
   const { usePlayerStore } = await server.ssrLoadModule("/src/stores/player.ts");
@@ -421,21 +426,31 @@ test("preview retries exhaust then mark the song failed", async (context) => {
   assert.equal(store.loadState, "failed");
 });
 
-test("a song without any playable source stays selected instead of skipping ahead", async () => {
+test("sequential play skips to the next song when a preview fails", async () => {
   const next = { ...netease, external_id: "next" };
   store.play(netease, [netease, next]);
   await settle();
   store.audio.emit("error");
   await settle();
+  assert.equal(store.repeatMode, "off");
+  assert.equal(store.current.external_id, "next");
+  assert.equal(store.index, 1);
+  assert.equal(store.failed, false);
+  assert.equal(store.playing, true);
+});
+
+test("the last song in sequential play stays failed when its preview fails", async () => {
+  store.play(netease);
+  await settle();
+  store.audio.emit("error");
+  await settle();
   assert.equal(store.current.external_id, netease.external_id);
-  assert.equal(store.index, 0);
   assert.equal(store.failed, true);
   assert.equal(store.playing, false);
-  assert.equal(store.loading, false);
   assert.equal(store.wantsPlayback, false);
 });
 
-test("clicking one song records the failure and stays on it", async () => {
+test("clicking one song records the failure and moves on in sequential play", async () => {
   const { usePreviewFailureStore } = await server.ssrLoadModule("/src/stores/previewFailures.ts");
   const failures = usePreviewFailureStore();
   const next = { ...netease, external_id: "next" };
@@ -443,8 +458,8 @@ test("clicking one song records the failure and stays on it", async () => {
   await settle();
   store.audio.emit("error");
   await settle();
-  assert.equal(store.current.external_id, netease.external_id);
-  assert.equal(store.failed, true);
+  assert.equal(store.current.external_id, "next");
+  assert.equal(store.failed, false);
   assert.equal(failures.entries.length, 1);
   assert.equal(failures.entries[0].externalId, netease.external_id);
   assert.equal(failures.entries[0].reason, "整段试听失败");
@@ -571,6 +586,115 @@ test("queue boundaries expose navigation state without pausing the final song", 
   assert.equal(store.index, 1);
   assert.equal(store.playing, true);
   assert.equal(store.audio.pauseCalls, pauseCalls);
+});
+
+test("repeat cycles through the list, one song, then off", () => {
+  assert.equal(store.repeatMode, "off");
+  store.cycleRepeat();
+  assert.equal(store.repeatMode, "all");
+  store.cycleRepeat();
+  assert.equal(store.repeatMode, "one");
+  store.cycleRepeat();
+  assert.equal(store.repeatMode, "off");
+});
+
+test("list repeat continues forward and wraps to the first song", async () => {
+  const middle = { ...netease, external_id: "middle" };
+  const last = { ...netease, external_id: "last" };
+  store.play(middle, [netease, middle, last]);
+  await settle();
+  store.cycleRepeat();
+  assert.equal(store.index, 1);
+  store.audio.emit("ended");
+  await settle();
+  assert.equal(store.current.external_id, "last");
+  store.audio.emit("ended");
+  await settle();
+  assert.equal(store.current.external_id, netease.external_id);
+  assert.equal(store.index, 0);
+});
+
+test("single repeat restarts the current song while next still moves on", async () => {
+  const next = { ...netease, external_id: "next" };
+  store.play(netease, [netease, next]);
+  await settle();
+  store.cycleRepeat();
+  store.cycleRepeat();
+  const playsBefore = store.audio.playCalls;
+  store.audio.emit("ended");
+  await settle();
+  assert.equal(store.current.external_id, netease.external_id);
+  assert.equal(store.index, 0);
+  assert.ok(store.audio.playCalls > playsBefore);
+  store.next();
+  await settle();
+  assert.equal(store.current.external_id, "next");
+});
+
+test("manual next and previous wrap only while the list repeats", async () => {
+  const last = { ...netease, external_id: "last" };
+  store.play(last, [netease, last]);
+  await settle();
+  assert.equal(store.hasNext, false);
+  store.next();
+  assert.equal(store.index, 1);
+  store.cycleRepeat();
+  assert.equal(store.hasNext, true);
+  assert.equal(store.hasPrev, true);
+  store.next();
+  await settle();
+  assert.equal(store.index, 0);
+  store.prev();
+  await settle();
+  assert.equal(store.index, 1);
+});
+
+test("list repeat moves to the next song after a preview failure and wraps once", async () => {
+  const last = { ...netease, external_id: "last" };
+  store.play(netease, [netease, last]);
+  await settle();
+  store.cycleRepeat();
+  store.next();
+  await settle();
+  assert.equal(store.current.external_id, "last");
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, netease.external_id);
+  assert.equal(store.index, 0);
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, netease.external_id);
+  assert.equal(store.failed, true);
+});
+
+test("single repeat stays on the song whose preview failed", async () => {
+  const next = { ...netease, external_id: "next" };
+  store.play(netease, [netease, next]);
+  await settle();
+  store.cycleRepeat();
+  store.cycleRepeat();
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.repeatMode, "one");
+  assert.equal(store.current.external_id, netease.external_id);
+  assert.equal(store.failed, true);
+});
+
+test("official playback repeats the same QQ song", async () => {
+  store.play(qq);
+  await settle();
+  store.cycleRepeat();
+  store.cycleRepeat();
+  const official = FakeOfficial.instance;
+  official.emit("play");
+  official.currentTime = 10;
+  store.currentTime = 10;
+  store.duration = 20;
+  official.emit("ended");
+  await settle();
+  assert.equal(store.current.external_id, qq.external_id);
+  assert.equal(official.playCalls.at(-1), qq.external_id);
+  assert.ok(official.playCalls.length >= 2);
 });
 
 test("openOfficial reports whether a new tab was opened", () => {

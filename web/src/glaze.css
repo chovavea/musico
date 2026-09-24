@@ -646,6 +646,17 @@ html[data-theme="glaze"] .gz-main .ring-zinc-300 {
   color: var(--gz-muted);
 }
 
+.gz-play {
+  display: grid;
+  height: 40px;
+  width: 40px;
+  margin: 0 2px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--gz-text);
+  color: var(--gz-bg);
+}
+
 .gz-player {
   position: fixed;
   z-index: 30;
@@ -664,14 +675,56 @@ html[data-theme="glaze"] .gz-main .ring-zinc-300 {
   backdrop-filter: blur(28px) saturate(1.5);
 }
 
-.gz-player-skip,
+.gz-player-skip {
+  display: grid;
+}
+
 .gz-player-extra {
   display: none;
+}
+
+.gz-ghost.is-on {
+  color: var(--gz-text);
+  background: var(--gz-chip);
 }
 
 .gz-ghost:disabled {
   cursor: default;
   opacity: 0.3;
+}
+
+.gz-player.is-lyrics .lyric-stage {
+  padding-top: 14px;
+}
+
+.gz-player.is-lyrics .gz-player-body {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.gz-player.is-lyrics .gz-player-controls {
+  justify-content: flex-end;
+}
+
+.gz-seek {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 16px;
+}
+
+.gz-seek-track {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(127 127 127 / 0.16);
+}
+
+.gz-seek-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--gz-accent);
 }
 
 .gz-player-progress {
