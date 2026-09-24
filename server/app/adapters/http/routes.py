@@ -29,7 +29,7 @@ from app.services.catalog import (
     payload_from_raw,
 )
 from app.services.health import build_health, compute_staleness
-from app.services.lyrics import LyricsService
+from app.services.lyrics import LyricsService, LyricsUnavailable
 from app.services.search import MAX_LIMIT
 
 
@@ -396,13 +396,16 @@ def build_router() -> APIRouter:
         if service is None:
             service = LyricsService(request.app.state.http_client)
             request.app.state.lyrics = service
-        data = await service.lookup(
-            platform,
-            external_id,
-            title=title,
-            artist=artist,
-            duration_ms=duration_ms,
-        )
+        try:
+            data = await service.lookup(
+                platform,
+                external_id,
+                title=title,
+                artist=artist,
+                duration_ms=duration_ms,
+            )
+        except LyricsUnavailable:
+            return fail(50301, "歌词暂时获取失败", status_code=503)
         return ok(data)
 
     @router.get("/health")

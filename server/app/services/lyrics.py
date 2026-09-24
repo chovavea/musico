@@ -19,6 +19,10 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
+
+class LyricsUnavailable(Exception):
+    """The lyric host failed. This is not the same as a song that has no lyric."""
+
 _TIME_TAG = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 _META_TAG = re.compile(r"^\[(?P<key>[a-z]+):(?P<value>[^\]]*)\]\s*$", re.IGNORECASE)
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -121,7 +125,7 @@ class LyricsService:
             lines = await self._fetch(platform, external_id, title, artist, duration_ms)
         except Exception:
             log.warning("lyric_fetch_failed", platform=platform, external_id=external_id)
-            lines = []
+            raise LyricsUnavailable from None
         payload = lyrics_payload(platform, external_id, lines)
         self._remember(key, payload, empty=not payload["lines"])
         return payload

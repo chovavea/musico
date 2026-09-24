@@ -5,7 +5,7 @@ import json
 
 import httpx
 import pytest
-from app.services.lyrics import LyricsService, parse_lrc
+from app.services.lyrics import LyricsService, LyricsUnavailable, parse_lrc
 
 
 def test_parse_lrc_keeps_every_timestamp_and_applies_offset() -> None:
@@ -103,6 +103,25 @@ async def test_instrumental_marker_is_not_treated_as_synced_lyrics() -> None:
         payload = await LyricsService(client).lookup("netease", "1")
     assert payload["synced"] is False
     assert payload["lines"] == [{"time_ms": None, "text": "纯音乐，请欣赏", "translation": None}]
+
+
+@pytest.mark.asyncio
+async def test_upstream_failure_is_not_stored_as_an_empty_lyric() -> None:
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(500)
+        return httpx.Response(200, json={"lrc": {"lyric": "[00:01.00]晴天"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        service = LyricsService(client)
+        with pytest.raises(LyricsUnavailable):
+            await service.lookup("netease", "1")
+        payload = await service.lookup("netease", "1")
+    assert payload["lines"][0]["text"] == "晴天"
+    assert calls["count"] == 2
 
 
 @pytest.mark.asyncio
