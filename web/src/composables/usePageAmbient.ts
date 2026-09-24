@@ -2,6 +2,7 @@ import { computed, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
 import { extractCoverRgb } from "./useCoverTint";
 import { latestOfBoard } from "../lib/catalog-board";
+import { coverImageUrl } from "../lib/cover-image";
 import { DEFAULT_PAGE_AMBIENT, morandiPageBackground } from "../lib/morandi";
 import { useChartsStore } from "../stores/charts";
 import { usePlayerStore } from "../stores/player";
@@ -61,6 +62,23 @@ function applyThemeColor(color: string | null, fallback: string): void {
     ?.setAttribute("content", color ?? fallback);
 }
 
+let coverSlot: "a" | "b" = "a";
+
+function applyCover(source: string | null): void {
+  const root = document.documentElement;
+  const image = coverImageUrl(source, 500);
+  if (!image) {
+    root.style.setProperty("--page-cover-a-opacity", "0");
+    root.style.setProperty("--page-cover-b-opacity", "0");
+    return;
+  }
+  const next = coverSlot === "a" ? "b" : "a";
+  root.style.setProperty(`--page-cover-${next}`, `url("${image}")`);
+  root.style.setProperty(`--page-cover-${next}-opacity`, "0.32");
+  root.style.setProperty(`--page-cover-${coverSlot}-opacity`, "0");
+  coverSlot = next;
+}
+
 export function usePageAmbient(): void {
   const theme = useThemeStore();
   const player = usePlayerStore();
@@ -84,6 +102,7 @@ export function usePageAmbient(): void {
     if (!enabled.value) {
       if (applied) {
         applyAmbient(null);
+        applyCover(null);
         applyThemeColor(null, theme.dark ? "#09090b" : "#fafafa");
         applied = null;
       }
@@ -91,6 +110,7 @@ export function usePageAmbient(): void {
     }
     if (!url) {
       applyAmbient(DEFAULT_PAGE_AMBIENT);
+      applyCover(null);
       applyThemeColor(DEFAULT_PAGE_AMBIENT, DEFAULT_PAGE_AMBIENT);
       applied = DEFAULT_PAGE_AMBIENT;
       return;
@@ -99,6 +119,7 @@ export function usePageAmbient(): void {
     if (current !== generation) return;
     const color = sample ? morandiPageBackground(sample) : DEFAULT_PAGE_AMBIENT;
     applyAmbient(color);
+    applyCover(url);
     applyThemeColor(color, DEFAULT_PAGE_AMBIENT);
     applied = color;
   }
@@ -110,5 +131,6 @@ export function usePageAmbient(): void {
   onUnmounted(() => {
     generation += 1;
     applyAmbient(null);
+    applyCover(null);
   });
 }

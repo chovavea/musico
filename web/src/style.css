@@ -79,6 +79,62 @@ html.dark ::selection {
   background-color: var(--accent-soft);
 }
 
+/* 浅色「简」：暖灰燕麦底，饱和度压低，避免纯白刺眼。 */
+html[data-theme="minimal"]:not(.dark) {
+  --minimal-canvas: rgb(228 222 212);
+  --minimal-surface: color-mix(in srgb, var(--minimal-canvas) 52%, white 48%);
+  --minimal-chrome: color-mix(in srgb, var(--minimal-canvas) 74%, white 26%);
+  --minimal-hover: color-mix(in srgb, var(--minimal-canvas) 92%, black 8%);
+  --minimal-muted: color-mix(in srgb, var(--minimal-canvas) 88%, white 12%);
+  --minimal-well: color-mix(in srgb, var(--minimal-canvas) 90%, black 10%);
+  --minimal-line: color-mix(in srgb, var(--minimal-canvas) 42%, rgb(148 136 120) 58%);
+  --cover-fade: var(--minimal-canvas);
+}
+
+html[data-theme="minimal"]:not(.dark),
+html[data-theme="minimal"]:not(.dark) body {
+  background-color: var(--minimal-canvas);
+}
+
+html[data-theme="minimal"]:not(.dark) .bg-white,
+html[data-theme="minimal"]:not(.dark) .focus\:bg-white:focus {
+  background-color: var(--minimal-surface);
+}
+
+html[data-theme="minimal"]:not(.dark) .bg-white\/95,
+html[data-theme="minimal"]:not(.dark) .bg-white\/80,
+html[data-theme="minimal"]:not(.dark) header.sticky,
+html[data-theme="minimal"]:not(.dark) footer {
+  background-color: var(--minimal-chrome);
+}
+
+html[data-theme="minimal"]:not(.dark) .bg-zinc-50:not(body),
+html[data-theme="minimal"]:not(.dark) .hover\:bg-zinc-50:hover,
+html[data-theme="minimal"]:not(.dark) .hover\:bg-zinc-100:hover {
+  background-color: var(--minimal-hover);
+}
+
+html[data-theme="minimal"]:not(.dark) .bg-zinc-100 {
+  background-color: var(--minimal-muted);
+}
+
+html[data-theme="minimal"]:not(.dark) .bg-zinc-200,
+html[data-theme="minimal"]:not(.dark) .bg-zinc-200\/80 {
+  background-color: var(--minimal-well);
+}
+
+html[data-theme="minimal"]:not(.dark) .border-zinc-200,
+html[data-theme="minimal"]:not(.dark) .border-zinc-100,
+html[data-theme="minimal"]:not(.dark) .divide-zinc-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--minimal-line);
+}
+
+html[data-theme="minimal"]:not(.dark) .ring-zinc-200,
+html[data-theme="minimal"]:not(.dark) .ring-zinc-200\/80,
+html[data-theme="minimal"]:not(.dark) .ring-zinc-300 {
+  --tw-ring-color: var(--minimal-line);
+}
+
 @property --page-ambient {
   syntax: "<color>";
   inherits: true;
@@ -87,6 +143,10 @@ html.dark ::selection {
 
 html[data-theme="pulse"]:not(.dark) {
   --page-ambient: rgb(250 250 250);
+  --page-cover-a: none;
+  --page-cover-b: none;
+  --page-cover-a-opacity: 0;
+  --page-cover-b-opacity: 0;
   --surface: color-mix(in srgb, var(--page-ambient) 82%, white 18%);
   --surface-chrome: color-mix(in srgb, var(--page-ambient) 90%, white 10%);
   --surface-hover: color-mix(in srgb, var(--page-ambient) 88%, black 12%);
@@ -98,8 +158,39 @@ html[data-theme="pulse"]:not(.dark) {
 }
 
 html[data-theme="pulse"]:not(.dark),
-html[data-theme="pulse"]:not(.dark) body,
+html[data-theme="pulse"]:not(.dark) body {
+  background-color: var(--page-ambient);
+}
+
+html[data-theme="pulse"]:not(.dark) body::before,
+html[data-theme="pulse"]:not(.dark) body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-position: center;
+  background-size: cover;
+  transition: opacity 480ms ease;
+}
+
+html[data-theme="pulse"]:not(.dark) body::before {
+  background-image: var(--page-cover-a);
+  opacity: var(--page-cover-a-opacity);
+}
+
+html[data-theme="pulse"]:not(.dark) body::after {
+  background-image: var(--page-cover-b);
+  opacity: var(--page-cover-b-opacity);
+}
+
 html[data-theme="pulse"]:not(.dark) #app {
+  position: relative;
+  z-index: 1;
+  background-color: transparent;
+}
+
+html[data-theme="pulse"]:not(.dark) footer.is-lyrics {
   background-color: var(--page-ambient);
 }
 

@@ -66,6 +66,7 @@ test("默认页面样式主题是简", () => {
   assert.equal(store.styleThemes[2].name, "炫");
   assert.equal(store.isPulse, false);
   assert.equal(document.documentElement.dataset.theme, "minimal");
+  assert.equal(themeColor, "#e4ded4");
 });
 
 test("选中主题写入 localStorage 并同步到 data-theme", () => {
@@ -102,5 +103,5 @@ test("未知主题值回退到简并清掉脏数据", () => {
   assert.equal(store.styleTheme, "minimal");
   assert.equal(localStorage.getItem(STYLE_STORAGE_KEY), null);
   assert.equal(document.documentElement.dataset.theme, "minimal");
-  assert.equal(themeColor, "#fafafa");
+  assert.equal(themeColor, "#e4ded4");
 });

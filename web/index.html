@@ -26,7 +26,7 @@
           var glaze = style === "glaze";
           document.getElementById("theme-color").setAttribute(
             "content",
-            dark ? (glaze ? "#070b14" : "#09090b") : glaze ? "#eef4fb" : "#fafafa",
+            dark ? (glaze ? "#070b14" : "#09090b") : glaze ? "#eef4fb" : style === "minimal" ? "#e4ded4" : "#fafafa",
           );
         } catch (_) {}
       })();

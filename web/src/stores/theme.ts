@@ -33,6 +33,7 @@ function readStoredStyleTheme(): StyleThemeId | null {
 
 function themeColor(dark: boolean, style: StyleThemeId): string {
   if (style === "glaze") return dark ? "#070b14" : "#eef4fb";
+  if (!dark && style === "minimal") return "#e4ded4";
   return dark ? "#09090b" : "#fafafa";
 }
 
