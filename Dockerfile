@@ -14,11 +14,14 @@ ENV PIP_DEFAULT_TIMEOUT=60
 # 这份清单要与 server/pyproject.toml 的 [project].dependencies 对齐：
 # - uvicorn 必须带 [standard]：uvloop/httptools 是 uvicorn 的加速实现，缺了会退回
 #   纯 Python 事件循环（容器里吞吐明显下降）；
+# - starlette 必须 >=1.6：ExcludingGZipMiddleware 用了 GZipResponder 的
+#   exclude_content_types 参数，旧版本没有这个参数，每个请求都会 500；
 # - 刻意不装 asyncpg 与 python-multipart：前者在 settings.py / database.py 里会被
 #   改写成 psycopg 驱动，运行期用不到；后者是 pyproject 里的历史遗留，代码里没有
 #   表单/文件上传接口用到它。
 RUN pip install --no-cache-dir --prefix=/install \
       "fastapi>=0.115.0" \
+      "starlette>=1.6.0" \
       "uvicorn[standard]>=0.32.0" \
       "sqlalchemy[asyncio]>=2.0.36" \
       "psycopg[binary]>=3.2.0" \

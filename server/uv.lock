@@ -569,6 +569,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "starlette" },
     { name = "structlog" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -601,6 +602,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
+    { name = "starlette", specifier = ">=1.6.0" },
     { name = "structlog", specifier = ">=24.4.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
