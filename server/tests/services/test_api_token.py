@@ -53,6 +53,19 @@ def test_cookie_ignored_unless_explicitly_allowed() -> None:
     assert _request_token_matches(request, "secret", allow_cookie=True)
 
 
+def test_non_ascii_credentials_are_rejected_instead_of_raised() -> None:
+    """compare_digest refuses non-ASCII strings, so these must 401, not 500."""
+    assert not _request_token_matches(
+        _request({"x-api-token": "中文"}),
+        "secret",
+    )
+    assert not _request_token_matches(
+        _request({"cookie": f"{TOKEN_COOKIE_NAME}=%E4%B8%AD%E6%96%87"}),
+        "secret",
+        allow_cookie=True,
+    )
+
+
 def _guarded_client(api_token: str) -> TestClient:
     app = FastAPI()
     app.add_middleware(ApiTokenMiddleware, api_token=api_token)
@@ -108,6 +121,13 @@ def test_media_urls_authenticate_with_the_cookie() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"route": "asset-1"}
+
+
+def test_a_non_ascii_cookie_is_rejected_instead_of_raised() -> None:
+    client = _guarded_client("secret")
+    client.cookies.set(TOKEN_COOKIE_NAME, "%E4%B8%AD%E6%96%87")
+
+    assert client.get("/api/v1/library/asset-1/stream").status_code == 401
 
 
 def test_the_cookie_cannot_authorize_a_write() -> None:

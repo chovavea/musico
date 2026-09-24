@@ -75,20 +75,30 @@ def _matches_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
     return any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
 
 
+def _token_matches(provided: str, expected: str) -> bool:
+    """Constant-time compare that also survives a non-ASCII candidate.
+
+    ``secrets.compare_digest`` rejects ``str`` operands that hold non-ASCII
+    characters, and both the header and the cookie value come from the client:
+    a single such byte would otherwise turn a 401 into a 500.
+    """
+    return secrets.compare_digest(provided.encode(), expected.encode())
+
+
 def _request_token_matches(
     request: Request, expected: str, *, allow_cookie: bool = False
 ) -> bool:
     authorization = request.headers.get("authorization", "")
     if authorization.lower().startswith("bearer "):
         provided = authorization[7:].strip()
-        if provided and secrets.compare_digest(provided, expected):
+        if provided and _token_matches(provided, expected):
             return True
     provided = request.headers.get("x-api-token", "")
-    if provided and secrets.compare_digest(provided, expected):
+    if provided and _token_matches(provided, expected):
         return True
     if allow_cookie:
         cookie = unquote(request.cookies.get(TOKEN_COOKIE_NAME, ""))
-        if cookie and secrets.compare_digest(cookie, expected):
+        if cookie and _token_matches(cookie, expected):
             return True
     return False
 
