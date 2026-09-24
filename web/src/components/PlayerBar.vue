@@ -6,11 +6,13 @@ import { usePlayerStore } from "../stores/player";
 import { useThemeStore } from "../stores/theme";
 import AppIcon from "./AppIcon.vue";
 import CoverImage from "./CoverImage.vue";
+import LyricsPanel from "./LyricsPanel.vue";
 
 const player = usePlayerStore();
 const theme = useThemeStore();
 const percent = computed(() => Math.round(player.progress * 1000) / 10);
 const dragging = ref(false);
+const lyricsOpen = ref(false);
 const root = ref<HTMLElement | null>(null);
 let heightObserver: ResizeObserver | null = null;
 
@@ -99,6 +101,7 @@ function onSeekKey(event: KeyboardEvent) {
     class="gz-player"
     aria-label="播放器"
   >
+    <LyricsPanel :open="lyricsOpen" @close="lyricsOpen = false" />
     <div
       role="slider"
       tabindex="0"
@@ -158,6 +161,16 @@ function onSeekKey(event: KeyboardEvent) {
         </button>
         <button
           type="button"
+          class="gz-ghost"
+          aria-label="歌词"
+          :aria-pressed="lyricsOpen"
+          :disabled="!player.current"
+          @click="lyricsOpen = !lyricsOpen"
+        >
+          <AppIcon name="lyrics" :size="18" />
+        </button>
+        <button
+          type="button"
           class="gz-ghost gz-player-queue-mobile"
           aria-label="播放列表"
           @click="comingSoon('播放列表')"
@@ -190,6 +203,7 @@ function onSeekKey(event: KeyboardEvent) {
     class="fixed inset-x-0 bottom-0 z-30 border-t border-zinc-200 bg-white/95 pb-[env(safe-area-inset-bottom,0px)] backdrop-blur-md dark:border-white/10 dark:bg-zinc-950/95"
     aria-label="播放器"
   >
+    <LyricsPanel :open="lyricsOpen" @close="lyricsOpen = false" />
     <div
       role="slider"
       tabindex="0"
@@ -246,6 +260,17 @@ function onSeekKey(event: KeyboardEvent) {
             @click="player.toggle()"
           >
             <AppIcon :name="player.loading ? 'spinner' : player.playing ? 'pause' : 'play'" :size="19" />
+          </button>
+          <button
+            type="button"
+            class="grid h-11 w-11 place-items-center rounded-full hover:bg-zinc-100 disabled:cursor-default disabled:opacity-30 dark:hover:bg-white/10"
+            :class="lyricsOpen ? 'bg-zinc-100 dark:bg-white/10' : ''"
+            aria-label="歌词"
+            :aria-pressed="lyricsOpen"
+            :disabled="!player.current"
+            @click="lyricsOpen = !lyricsOpen"
+          >
+            <AppIcon name="lyrics" :size="18" />
           </button>
           <button
             type="button"

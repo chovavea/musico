@@ -29,6 +29,7 @@ from app.services.catalog import (
     payload_from_raw,
 )
 from app.services.health import build_health, compute_staleness
+from app.services.lyrics import LyricsService
 from app.services.search import MAX_LIMIT
 
 
@@ -381,6 +382,28 @@ def build_router() -> APIRouter:
             return fail(40401, "library asset not found", status_code=404)
         _invalidate_library_cache(request.app.state.latest_cache)
         return ok({"deleted": True})
+
+    @router.get("/lyrics")
+    async def lyrics(
+        request: Request,
+        platform: str = Query(min_length=1, max_length=32),
+        external_id: str = Query(min_length=1, max_length=64),
+        title: str = Query(default="", max_length=512),
+        artist: str = Query(default="", max_length=512),
+        duration_ms: int | None = Query(default=None, ge=0, le=3_600_000),
+    ) -> Any:
+        service = getattr(request.app.state, "lyrics", None)
+        if service is None:
+            service = LyricsService(request.app.state.http_client)
+            request.app.state.lyrics = service
+        data = await service.lookup(
+            platform,
+            external_id,
+            title=title,
+            artist=artist,
+            duration_ms=duration_ms,
+        )
+        return ok(data)
 
     @router.get("/health")
     async def health(request: Request) -> Any:

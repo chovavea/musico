@@ -25,6 +25,7 @@ withDefaults(
       | "shuffle"
       | "waveform"
       | "queue"
+      | "lyrics"
       | "play-outline";
     size?: number;
   }>(),
@@ -197,6 +198,13 @@ withDefaults(
     <path
       v-else-if="name === 'queue'"
       d="M7 7h13M7 12h13M7 17h9M4 7h.01M4 12h.01M4 17h.01"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+    />
+    <path
+      v-else-if="name === 'lyrics'"
+      d="M5 6.5h14M5 10.5h11M5 14.5h14M5 18.5h8"
       stroke="currentColor"
       stroke-width="1.8"
       stroke-linecap="round"

@@ -52,8 +52,8 @@ class ExcludingGZipMiddleware(GZipMiddleware):
         await responder(scope, receive, send)
 
 
-# Reads the open dashboard needs: charts, catalog, search, in-page previews and
-# the health probe.  Everything else under /api/v1 — the library list, the
+# Reads the open dashboard needs: charts, catalog, search, in-page previews,
+# lyrics and the health probe.  Everything else under /api/v1 — the library list, the
 # downloaded files themselves, the download history and every write — needs the
 # token as soon as API_TOKEN is set.
 PUBLIC_READ_PREFIXES = (
@@ -64,6 +64,7 @@ PUBLIC_READ_PREFIXES = (
     "/api/v1/health",
     "/api/v1/cover-image",
     "/api/v1/preview",
+    "/api/v1/lyrics",
 )
 # The browser keeps the same token locally and mirrors it into a cookie, because
 # <audio src> / <a href> media URLs cannot carry a request header.

@@ -7,6 +7,7 @@ import type {
   FallbackResolution,
   HealthPayload,
   LibraryAsset,
+  LyricPayload,
   LatestBoard,
   PlatformInfo,
   SearchPayload,
@@ -191,6 +192,25 @@ async function sendJson<T>(
     );
   }
   throw new ApiError("接口返回了无法识别的数据，请稍后重试", "invalid-response", url);
+}
+
+export function lyrics(item: {
+  platform: string;
+  external_id: string;
+  title: string;
+  artist: string;
+  duration_ms?: number | null;
+}): Promise<Envelope<LyricPayload>> {
+  const query = new URLSearchParams({
+    platform: item.platform,
+    external_id: item.external_id,
+    title: item.title,
+    artist: item.artist,
+  });
+  if (item.duration_ms && item.duration_ms > 0) {
+    query.set("duration_ms", String(item.duration_ms));
+  }
+  return getJson(`/api/v1/lyrics?${query}`);
 }
 
 export function listPlatforms(): Promise<Envelope<PlatformInfo[]>> {

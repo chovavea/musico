@@ -38,6 +38,7 @@ from app.plugins._registry import load_registry
 from app.services.boards_config import BoardsConfigError, load_raw_boards, parse_board_specs
 from app.services.collect import CollectService
 from app.services.downloads import DownloadService
+from app.services.lyrics import LyricsService
 from app.services.preview_telemetry import prewarm as prewarm_preview_stats
 from app.services.search import SearchService
 from app.settings import Settings, export_env_file, get_settings
@@ -320,6 +321,7 @@ def create_app(
     app.state.latest_cache = collect.latest_cache
     app.state.collect = collect
     app.state.http_client = client
+    app.state.lyrics = LyricsService(client)
     app.state.preview_client = preview_client
     app.state.cover_client = cover_client
     app.state.fallback_service = fallback_service

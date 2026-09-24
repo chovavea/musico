@@ -85,6 +85,19 @@ export interface CatalogPlatform {
   groups: CatalogGroup[];
 }
 
+export interface LyricLine {
+  time_ms: number | null;
+  text: string;
+  translation: string | null;
+}
+
+export interface LyricPayload {
+  platform: string;
+  external_id: string;
+  synced: boolean;
+  lines: LyricLine[];
+}
+
 export interface RankItem {
   rank: number;
   previous_rank: number | null;
