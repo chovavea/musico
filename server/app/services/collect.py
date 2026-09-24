@@ -28,7 +28,7 @@ class CollectService:
         self._settings = settings
         self.latest_cache = cache if cache is not None else {}
 
-    async def collect_board(self, spec: BoardSpec) -> None:
+    async def collect_board(self, spec: BoardSpec, *, preserve_movement: bool = False) -> None:
         started = time.perf_counter()
         log.info("collect_start", platform=spec.platform, board_id=spec.id)
         extra_issues = self._registry.extra_ok(spec)
@@ -56,7 +56,7 @@ class CollectService:
             # Official preview URLs expire; resolve on play via /preview/.../stream.
             async with self._session_factory() as session:
                 repo = ChartRepository(session)
-                await repo.persist_snapshot(spec, items)
+                await repo.persist_snapshot(spec, items, preserve_movement=preserve_movement)
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 await repo.record_health(
                     spec.id, ok=True, latency_ms=latency_ms, item_count=len(items), error=None

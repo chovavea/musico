@@ -26,25 +26,29 @@ class ChartScheduler:
                 seconds=spec.interval_sec,
                 id=spec.id,
                 args=[spec],
+                kwargs={"preserve_movement": False},
                 max_instances=1,
                 coalesce=True,
             )
         self._scheduler.start()
         for spec in self._specs:
+            # A process start is not an hourly refresh. Keep the movement
+            # already stored, even when the last snapshot is from yesterday.
             self._scheduler.add_job(
                 self._run_one,
                 id=f"{spec.id}_once",
                 args=[spec],
+                kwargs={"preserve_movement": True},
             )
 
     def shutdown(self) -> None:
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
 
-    async def _run_one(self, spec: BoardSpec) -> None:
+    async def _run_one(self, spec: BoardSpec, *, preserve_movement: bool = False) -> None:
         lock = self._locks[spec.id]
         if lock.locked():
             log.warning("collect_skip_locked", board_id=spec.id)
             return
         async with lock:
-            await self._collect.collect_board(spec)
+            await self._collect.collect_board(spec, preserve_movement=preserve_movement)

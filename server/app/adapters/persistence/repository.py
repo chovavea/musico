@@ -32,6 +32,28 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _remembered_previous(
+    old_rank: int | None,
+    carried: int | None,
+    new_rank: int,
+    *,
+    keep_movement: bool,
+) -> int | None:
+    """Remember a rise or fall across a restart, then let the next interval refresh it.
+
+    The first time a song is seen there is no previous rank. A startup recollect
+    keeps that state, including 新, however old the snapshot is. A collect on
+    the normal interval records 平 when the rank did not move.
+    """
+    if old_rank is None:
+        return None
+    if old_rank != new_rank:
+        return old_rank
+    if keep_movement:
+        return carried
+    return old_rank
+
+
 class ChartRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -67,16 +89,29 @@ class ChartRepository:
                 if row.sort_order == 0:
                     row.sort_order = (index + 1) * 10
 
-    async def persist_snapshot(self, spec: BoardSpec, items: list[RawRankItem]) -> str:
+    async def persist_snapshot(
+        self,
+        spec: BoardSpec,
+        items: list[RawRankItem],
+        *,
+        preserve_movement: bool = False,
+    ) -> str:
         latest = await self._session.get(BoardLatestRow, spec.id)
         previous_ranks: dict[str, int] = {}
+        carried_previous: dict[str, int | None] = {}
         if latest is not None:
             result = await self._session.execute(
-                select(RankEntryRow.platform_song_id, RankEntryRow.rank).where(
-                    RankEntryRow.snapshot_id == latest.snapshot_id
-                )
+                select(
+                    RankEntryRow.platform_song_id,
+                    RankEntryRow.rank,
+                    RankEntryRow.previous_rank,
+                ).where(RankEntryRow.snapshot_id == latest.snapshot_id)
             )
-            previous_ranks = {str(song_id): int(rank) for song_id, rank in result.all()}
+            for song_id, rank, previous in result.all():
+                previous_ranks[str(song_id)] = int(rank)
+                carried_previous[str(song_id)] = (
+                    int(previous) if previous is not None else None
+                )
 
         n = len(items)
         snapshot = RankSnapshotRow(id=str(uuid.uuid4()), board_id=spec.id, fetched_at=_now())
@@ -92,7 +127,12 @@ class ChartRepository:
                     rank=item.rank,
                     raw_score=item.raw_score,
                     normalized_score=normalized_score(item.rank, n),
-                    previous_rank=previous_ranks.get(song_id),
+                    previous_rank=_remembered_previous(
+                        previous_ranks.get(song_id),
+                        carried_previous.get(song_id),
+                        item.rank,
+                        keep_movement=preserve_movement,
+                    ),
                     preview_url=item.preview_url or None,
                     preview_quality=item.preview_quality,
                     preview_expire_at=item.preview_expire_at,
