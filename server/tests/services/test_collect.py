@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from app.adapters.persistence.models import Base
+from app.adapters.persistence.models import Base, PlatformSongRow
 from app.adapters.persistence.repository import ChartRepository
 from app.domain.models import BoardSpec, RawRankItem
 from app.plugins._registry import PluginRecord, PluginRegistry
@@ -92,6 +92,39 @@ async def test_previous_rank_in_second_snapshot(
     assert by_id["b"]["previous_rank"] == 2
     assert by_id["a"]["rank"] == 2
     assert by_id["a"]["previous_rank"] == 1
+
+
+@pytest.mark.asyncio
+async def test_same_platform_song_is_updated_not_duplicated(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    first = RawRankItem(
+        rank=1,
+        external_id="shared",
+        title="晴天",
+        artist="周杰伦",
+        duration_ms=269000,
+        official_url="https://example.com/shared",
+    )
+    second = RawRankItem(
+        rank=3,
+        external_id="shared",
+        title="晴天 (Live)",
+        artist="周杰伦",
+        official_url="https://example.com/shared-live",
+    )
+    async with session_factory() as session:
+        repo = ChartRepository(session)
+        first_id = await repo._upsert_song("qqmusic", first)
+        second_id = await repo._upsert_song("qqmusic", second)
+        await session.commit()
+    assert first_id == second_id
+    async with session_factory() as session:
+        row = await session.get(PlatformSongRow, first_id)
+    assert row is not None
+    assert row.title == "晴天 (Live)"
+    assert row.duration_ms == 269000
+    assert row.official_url == "https://example.com/shared-live"
 
 
 @pytest.mark.asyncio

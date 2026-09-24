@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,33 +110,34 @@ class ChartRepository:
         return snapshot.id
 
     async def _upsert_song(self, platform: str, item: RawRankItem) -> str:
-        result = await self._session.execute(
-            select(PlatformSongRow).where(
-                PlatformSongRow.platform_id == platform,
-                PlatformSongRow.external_id == item.external_id,
-            )
+        # Two boards on the same platform collect at once and often share a song.
+        # A select-then-insert loses that race and aborts the snapshot.
+        dialect = self._session.get_bind().dialect.name
+        insert = pg_insert if dialect == "postgresql" else sqlite_insert
+        insert_stmt = insert(PlatformSongRow).values(
+            id=str(uuid.uuid4()),
+            platform_id=platform,
+            external_id=item.external_id,
+            title=item.title,
+            artist=item.artist,
+            duration_ms=item.duration_ms,
+            cover_url=item.cover_url,
+            official_url=item.official_url,
         )
-        row = result.scalar_one_or_none()
-        if row is None:
-            row = PlatformSongRow(
-                id=str(uuid.uuid4()),
-                platform_id=platform,
-                external_id=item.external_id,
-                title=item.title,
-                artist=item.artist,
-                duration_ms=item.duration_ms,
-                cover_url=item.cover_url,
-                official_url=item.official_url,
-            )
-            self._session.add(row)
-            await self._session.flush()
-            return row.id
-        row.title = item.title
-        row.artist = item.artist
-        row.duration_ms = item.duration_ms or row.duration_ms
-        row.cover_url = item.cover_url
-        row.official_url = item.official_url
-        return row.id
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=[PlatformSongRow.platform_id, PlatformSongRow.external_id],
+            set_={
+                "title": insert_stmt.excluded.title,
+                "artist": insert_stmt.excluded.artist,
+                "duration_ms": func.coalesce(
+                    insert_stmt.excluded.duration_ms, PlatformSongRow.duration_ms
+                ),
+                "cover_url": insert_stmt.excluded.cover_url,
+                "official_url": insert_stmt.excluded.official_url,
+            },
+        ).returning(PlatformSongRow.id)
+        result = await self._session.execute(stmt)
+        return str(result.scalar_one())
 
     async def record_health(
         self,
