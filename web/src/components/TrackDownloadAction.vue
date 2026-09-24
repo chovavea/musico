@@ -8,11 +8,9 @@ const props = withDefaults(
   defineProps<{
     item: RankItem;
     showLabel?: boolean;
-    subtle?: boolean;
   }>(),
   {
     showLabel: false,
-    subtle: false,
   },
 );
 
@@ -30,10 +28,7 @@ const klass = computed(() => {
   if (state.value === "queued") {
     return "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300";
   }
-  if (props.subtle) {
-    return "bg-black/5 text-secondary hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15";
-  }
-  return "bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200";
+  return "bg-transparent text-zinc-500 ring-1 ring-zinc-200 hover:bg-zinc-100 dark:text-zinc-300 dark:ring-white/15 dark:hover:bg-white/10";
 });
 
 function enqueue() {
@@ -44,8 +39,8 @@ function enqueue() {
 <template>
   <button
     type="button"
-    class="relative z-10 inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-medium transition active:scale-95 disabled:cursor-default"
-    :class="klass"
+    class="relative z-10 inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1.5 rounded-full text-xs font-medium transition active:scale-95 disabled:cursor-default"
+    :class="[klass, showLabel ? 'px-3' : 'w-9']"
     :aria-label="label"
     :title="label"
     :disabled="state !== 'idle'"

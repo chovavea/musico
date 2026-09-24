@@ -27,7 +27,7 @@ const delta = computed(() => {
       klass: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
     };
   }
-  return { text: "持平", klass: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300" };
+  return { text: "平", klass: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300" };
 });
 
 const rankKlass = computed(() => {
@@ -82,8 +82,7 @@ function onPlay() {
       <div class="truncate text-[0.74rem] text-artist">{{ item.artist }}</div>
     </div>
     <div class="flex items-center justify-self-end gap-2 text-sm">
-      <span class="pointer-events-none tabular hidden w-8 shrink-0 text-right text-zinc-600 sm:inline dark:text-zinc-300">{{ Math.round(item.normalized_score) }}</span>
-      <span class="pointer-events-none hidden rounded-full px-2 py-0.5 text-xs sm:inline-flex" :class="delta.klass">{{ delta.text }}</span>
+      <span class="pointer-events-none inline-flex rounded-full px-2 py-0.5 text-xs" :class="delta.klass">{{ delta.text }}</span>
       <span class="relative z-10 pointer-events-auto">
         <TrackDownloadAction :item="item" />
       </span>

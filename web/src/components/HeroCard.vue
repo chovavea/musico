@@ -149,7 +149,7 @@ function onPlay(item?: RankItem) {
                 </span>
               </span>
               <span class="relative z-10 pointer-events-auto">
-                <TrackDownloadAction :item="item" subtle />
+                <TrackDownloadAction :item="item" />
               </span>
             </div>
           </li>

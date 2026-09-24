@@ -113,12 +113,12 @@ const staleLabel = computed(() => {
       class="overflow-hidden rounded-2xl bg-white ring-1 ring-zinc-200/80 dark:bg-zinc-900 dark:ring-white/10"
     >
       <div
-        class="hidden gap-3 border-b border-zinc-100 px-3 py-2 text-xs text-secondary sm:grid sm:grid-cols-[2.25rem_2.75rem_minmax(0,1fr)_9rem] dark:border-white/5"
+        class="hidden gap-3 border-b border-zinc-100 px-3 py-2 text-xs text-secondary sm:grid sm:grid-cols-[2.25rem_2.75rem_minmax(0,1fr)_auto] dark:border-white/5"
       >
         <span class="text-right">排名</span>
         <span />
         <span>曲目</span>
-        <span class="flex items-center gap-2"><span class="hidden w-8 shrink-0 sm:inline-block" aria-hidden="true" /><span>升降</span></span>
+        <span class="text-right">升降</span>
       </div>
       <div class="divide-y divide-zinc-100 dark:divide-white/5">
         <RankRow

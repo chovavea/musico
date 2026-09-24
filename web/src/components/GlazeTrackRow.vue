@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { comingSoon } from "../lib/coming-soon";
+import { computed } from "vue";
 import { useTrackDownload } from "../composables/useTrackDownload";
 import { usePlayerStore } from "../stores/player";
 import type { RankItem } from "../types";
@@ -15,8 +14,6 @@ const props = defineProps<{
 
 const player = usePlayerStore();
 const download = useTrackDownload();
-const menuOpen = ref(false);
-const root = ref<HTMLElement | null>(null);
 
 const active = computed(
   () =>
@@ -37,26 +34,17 @@ const rankKlass = computed(() => {
 });
 
 function play() {
-  menuOpen.value = false;
   player.play(props.item, props.queue);
 }
 
 function onDownload() {
   if (downloadState.value !== "idle") return;
-  menuOpen.value = false;
   void download.enqueue(props.item);
 }
-
-function onDoc(event: PointerEvent) {
-  if (!root.value?.contains(event.target as Node)) menuOpen.value = false;
-}
-
-onMounted(() => document.addEventListener("pointerdown", onDoc));
-onUnmounted(() => document.removeEventListener("pointerdown", onDoc));
 </script>
 
 <template>
-  <div ref="root" class="gz-row" :class="{ 'is-hit': hit || active }">
+  <div class="gz-row" :class="{ 'is-hit': hit || active }">
     <button
       type="button"
       class="absolute inset-0 z-0 rounded-[18px] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-zinc-400 dark:focus-visible:outline-zinc-600"
@@ -74,29 +62,19 @@ onUnmounted(() => document.removeEventListener("pointerdown", onDoc));
       <div class="gz-artist">{{ item.artist }}</div>
     </div>
     <div class="gz-row-actions relative z-10">
-      <button type="button" class="gz-ghost" :aria-label="`播放 ${item.title}`" @click.stop="play">
-        <AppIcon name="play-outline" :size="20" />
-      </button>
       <button
         type="button"
         class="gz-ghost"
-        :aria-expanded="menuOpen"
-        :aria-label="`${item.title} 更多操作`"
-        @click.stop="menuOpen = !menuOpen"
+        :aria-label="downloadLabel"
+        :title="downloadLabel"
+        :disabled="downloadState !== 'idle'"
+        @click.stop="onDownload"
       >
         <AppIcon
-          :name="downloadState === 'ready' ? 'check' : downloadState === 'queued' ? 'spinner' : 'more'"
-          :size="18"
+          :name="downloadState === 'ready' ? 'check' : downloadState === 'queued' ? 'spinner' : 'download'"
+          :size="16"
         />
       </button>
-      <div v-if="menuOpen" class="gz-sheet" role="menu">
-        <button type="button" role="menuitem" :disabled="downloadState !== 'idle'" @click.stop="onDownload">
-          <AppIcon :name="downloadState === 'ready' ? 'check' : downloadState === 'queued' ? 'spinner' : 'download'" :size="15" />
-          {{ downloadLabel }}
-        </button>
-        <button type="button" role="menuitem" @click.stop="comingSoon('下一首播放')">下一首播放</button>
-        <button type="button" role="menuitem" @click.stop="comingSoon('加入歌单')">加入歌单</button>
-      </div>
     </div>
   </div>
 </template>
