@@ -102,7 +102,7 @@ const staleLabel = computed(() => {
           class="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-4 text-[0.86rem] font-semibold text-zinc-600 ring-1 ring-zinc-300 transition hover:bg-zinc-100 hover:text-zinc-900 active:scale-95 dark:text-zinc-300 dark:ring-white/15 dark:hover:bg-white/10 dark:hover:text-white"
           :aria-label="`播放本榜：${board.name}`"
           :title="`播放本榜：${board.name}`"
-          @click="allItems[0] && player.play(allItems[0], allItems)"
+          @click="allItems[0] && player.play(allItems[0], allItems, { advanceOnFail: true })"
         >
           <AppIcon name="play" :size="16" />
           播放本榜

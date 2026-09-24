@@ -31,7 +31,7 @@ const slides = computed(() =>
 );
 
 function playSlide(items: RankItem[], top?: RankItem) {
-  if (top) player.play(top, items);
+  if (top) player.play(top, items, { advanceOnFail: true });
 }
 </script>
 

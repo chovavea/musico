@@ -7,6 +7,7 @@ import {
   type QQOfficialPlayer,
 } from "../lib/qq-official-player";
 import { useDownloadsStore } from "./downloads";
+import { usePreviewFailureStore } from "./previewFailures";
 import type { RankItem } from "../types";
 
 function sameTrack(left: RankItem, right: RankItem): boolean {
@@ -73,6 +74,7 @@ export const usePlayerStore = defineStore("player", {
     loading: false,
     loadState: "idle" as "idle" | "loading" | "ready" | "cancelled" | "failed",
     wantsPlayback: false,
+    advanceOnFail: false,
     officialTimer: null as ReturnType<typeof setTimeout> | null,
     streamRetries: 0,
     streamRetryTimer: null as ReturnType<typeof setTimeout> | null,
@@ -253,8 +255,9 @@ export const usePlayerStore = defineStore("player", {
         this.startFallback();
       });
     },
-    play(item: RankItem, queue?: RankItem[]) {
+    play(item: RankItem, queue?: RankItem[], options?: { advanceOnFail?: boolean }) {
       this.failStreak = 0;
+      this.advanceOnFail = Boolean(options?.advanceOnFail);
       this.queue = queue?.length ? queue : [item];
       this.index = this.queue.findIndex((entry) => sameTrack(entry, item));
       if (this.index < 0) {
@@ -358,17 +361,22 @@ export const usePlayerStore = defineStore("player", {
     startFallback() {
       if (!this.current || !this.usingOfficial || !this.wantsPlayback) return;
       // Keep the same track and queue position. The SDK has already given up on
-      // this platform, so let the backend walk its whole ladder: this platform's
-      // official preview, another platform's official preview, download sites,
-      // then strict and fuzzy listen providers. Never advance on a failed source.
+      // this platform, so let the backend walk its whole ladder before this
+      // song is treated as failed.
       this.currentTime = 0;
       this.duration = 0;
       this.startAudio(this.current);
     },
     failPlayback(playbackId: number) {
       if (this.playbackId !== playbackId || this.failed || !this.wantsPlayback) return;
-      // Keep the requested song selected and let the player bar explain the
-      // state: skipping ahead would hide that no source could be played.
+      const current = this.current;
+      if (current) usePreviewFailureStore().record(current);
+      // A chart play button keeps walking the queue after the whole preview
+      // ladder fails. Clicking one song stays put so the failure stays visible.
+      if (this.advanceOnFail && this.index + 1 < this.queue.length) {
+        this.next();
+        return;
+      }
       this.playing = false;
       this.loading = false;
       this.loadState = "failed";

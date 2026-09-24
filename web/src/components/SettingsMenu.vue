@@ -4,6 +4,7 @@ import { RouterLink, useRoute } from "vue-router";
 import { getApiToken, setApiToken } from "../api";
 import { downloadErrorLabel } from "../lib/status-labels";
 import { useHealthStore } from "../stores/health";
+import { usePreviewFailureStore } from "../stores/previewFailures";
 import { useThemeStore, type StyleThemeId } from "../stores/theme";
 import { useDownloadsStore } from "../stores/downloads";
 import AppIcon from "./AppIcon.vue";
@@ -17,6 +18,7 @@ withDefaults(
 
 const theme = useThemeStore();
 const health = useHealthStore();
+const previewFailures = usePreviewFailureStore();
 const downloads = useDownloadsStore();
 const route = useRoute();
 const open = ref(false);
@@ -25,6 +27,11 @@ const trigger = ref<HTMLButtonElement | null>(null);
 const apiToken = ref("");
 const tokenSaved = ref(false);
 let tokenSavedTimer = 0;
+
+const menuLabel = computed(() => {
+  const count = previewFailures.unseenCount;
+  return count > 0 ? `配置，${count} 条试听失败` : "配置";
+});
 
 const statusLabel = computed(() => {
   if (health.error) return "异常";
@@ -124,7 +131,7 @@ onUnmounted(() => {
       :aria-expanded="open"
       aria-controls="settings-menu"
       aria-haspopup="dialog"
-      aria-label="配置"
+      :aria-label="menuLabel"
       @click.stop="toggle()"
     >
       <svg
@@ -155,6 +162,12 @@ onUnmounted(() => {
         <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" :stroke-dasharray="`${downloads.percent * 0.8796} 87.96`" />
       </svg>
     </button>
+    <span
+      v-if="previewFailures.unseenCount"
+      class="pointer-events-none absolute -right-1 -top-1 z-10 grid h-4 min-w-4 place-items-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold leading-none text-white"
+    >
+      {{ previewFailures.unseenCount > 99 ? "99+" : previewFailures.unseenCount }}
+    </span>
     <div
       v-if="downloads.failureNotice || downloads.actionError"
       class="absolute right-0 top-full z-40 mt-2 w-72 space-y-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-700 shadow-lg ring-1 ring-rose-200 dark:bg-rose-950 dark:text-rose-200 dark:ring-rose-500/30"
@@ -332,6 +345,12 @@ onUnmounted(() => {
             :style="{ '--status-glow': health.glowColor }"
             aria-hidden="true"
           />
+          <span
+            v-if="previewFailures.unseenCount"
+            class="grid h-4 min-w-4 place-items-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold leading-none text-white"
+          >
+            {{ previewFailures.unseenCount > 99 ? "99+" : previewFailures.unseenCount }}
+          </span>
           <span class="text-sm text-zinc-500 dark:text-zinc-400">{{ statusLabel }}</span>
         </span>
         <AppIcon name="chevron-right" :size="15" class="text-zinc-500" />

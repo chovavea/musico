@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { storeToRefs } from "pinia";
 import AppIcon from "../components/AppIcon.vue";
 import PageHeader from "../components/PageHeader.vue";
@@ -7,9 +7,12 @@ import { platformLabel } from "../lib/boards";
 import { formatUpdatedAt } from "../lib/format";
 import { downloadErrorLabel } from "../lib/status-labels";
 import { useHealthStore } from "../stores/health";
+import { usePreviewFailureStore } from "../stores/previewFailures";
 
 const healthStore = useHealthStore();
+const previewFailures = usePreviewFailureStore();
 const { payload, error, loading, lastRefreshedAt } = storeToRefs(healthStore);
+const { entries: previewFailureEntries, unseenCount: previewFailureCount } = storeToRefs(previewFailures);
 
 // 下载兜底目前只读展示：它记录下载失败与兜底跳转结果，但不参与 healthScore。
 // TODO(health-score): 后续把兜底当成一个“源”纳入评分（见 ../lib/healthScore.ts）。
@@ -61,7 +64,12 @@ const statusLabel = computed(() => {
 });
 
 onMounted(async () => {
+  previewFailures.markSeen();
   await healthStore.refresh();
+});
+
+watch(previewFailureCount, (count) => {
+  if (count > 0) previewFailures.markSeen();
 });
 </script>
 
@@ -158,6 +166,32 @@ onMounted(async () => {
         <p class="mt-4 text-sm text-zinc-500">正在读取各榜健康状态</p>
       </article>
     </div>
+
+    <article class="mt-6 rounded-2xl bg-white p-4 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-white/10">
+      <div class="font-medium">试听失败</div>
+      <p class="mt-1 text-xs text-secondary">
+        播放整榜时，整段试听失败会自动换下一首。点某一首失败则停在当前这首。
+      </p>
+      <ul v-if="previewFailureEntries.length" class="mt-3 space-y-2">
+        <li
+          v-for="entry in previewFailureEntries"
+          :key="entry.id"
+          class="flex items-start justify-between gap-3 rounded-xl bg-zinc-50 px-3 py-2 dark:bg-white/5"
+        >
+          <div class="min-w-0">
+            <div class="truncate text-sm">
+              {{ entry.title || "未知歌曲" }}
+              <span v-if="entry.artist" class="text-secondary">· {{ entry.artist }}</span>
+            </div>
+            <div class="mt-0.5 truncate text-xs text-secondary">
+              {{ platformLabel(entry.platform) }} · {{ entry.reason }}
+            </div>
+          </div>
+          <div class="shrink-0 text-xs text-secondary">{{ eventTime(entry.createdAt) }}</div>
+        </li>
+      </ul>
+      <p v-else class="mt-3 text-sm text-secondary">还没有试听失败记录</p>
+    </article>
 
     <!-- 下载兜底只读视图：只展示失败与跳转结果。
          TODO(health-score): 后续把兜底当成一个“源”纳入 healthScore 评分。 -->

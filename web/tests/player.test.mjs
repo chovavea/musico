@@ -119,6 +119,7 @@ beforeEach(async () => {
   };
   FakeAudio.results = [];
   FakeOfficial.instance = null;
+  globalThis.sessionStorage?.clear();
   server.moduleGraph.invalidateAll();
   setActivePinia(createPinia());
   const { usePlayerStore } = await server.ssrLoadModule("/src/stores/player.ts");
@@ -432,6 +433,71 @@ test("a song without any playable source stays selected instead of skipping ahea
   assert.equal(store.playing, false);
   assert.equal(store.loading, false);
   assert.equal(store.wantsPlayback, false);
+});
+
+test("clicking one song records the failure and stays on it", async () => {
+  const { usePreviewFailureStore } = await server.ssrLoadModule("/src/stores/previewFailures.ts");
+  const failures = usePreviewFailureStore();
+  const next = { ...netease, external_id: "next" };
+  store.play(netease, [netease, next]);
+  await settle();
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, netease.external_id);
+  assert.equal(store.failed, true);
+  assert.equal(failures.entries.length, 1);
+  assert.equal(failures.entries[0].externalId, netease.external_id);
+  assert.equal(failures.entries[0].reason, "整段试听失败");
+  assert.equal(failures.unseenCount, 1);
+});
+
+test("chart play skips to the next song after the whole preview stream fails", async () => {
+  const { usePreviewFailureStore } = await server.ssrLoadModule("/src/stores/previewFailures.ts");
+  const failures = usePreviewFailureStore();
+  const next = { ...netease, external_id: "next", title: "下一首" };
+  store.play(netease, [netease, next], { advanceOnFail: true });
+  await settle();
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, "next");
+  assert.equal(store.index, 1);
+  assert.equal(store.failed, false);
+  assert.equal(store.playing, true);
+  assert.equal(failures.entries.length, 1);
+  assert.equal(failures.entries[0].title, netease.title);
+  assert.equal(failures.unseenCount, 1);
+});
+
+test("chart play stops on the last song when its preview stream fails", async () => {
+  const { usePreviewFailureStore } = await server.ssrLoadModule("/src/stores/previewFailures.ts");
+  const failures = usePreviewFailureStore();
+  const last = { ...netease, external_id: "last", title: "最后一首" };
+  store.play(netease, [netease, last], { advanceOnFail: true });
+  await settle();
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, "last");
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, "last");
+  assert.equal(store.failed, true);
+  assert.equal(store.wantsPlayback, false);
+  assert.equal(failures.entries.length, 2);
+});
+
+test("chart play still tries the backend ladder before skipping a QQ song", async () => {
+  const next = { ...qq, external_id: "next-mid" };
+  store.play(qq, [qq, next], { advanceOnFail: true });
+  await settle();
+  FakeOfficial.instance.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, qq.external_id);
+  assert.equal(store.index, 0);
+  assert.equal(store.usingOfficial, false);
+  store.audio.emit("error");
+  await settle();
+  assert.equal(store.current.external_id, "next-mid");
+  assert.equal(store.failed, false);
 });
 
 test("a late rejection from the previous source cannot corrupt the next song", async () => {
