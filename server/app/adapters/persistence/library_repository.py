@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, Result, and_, func, or_, select, update
+from sqlalchemy import CursorResult, Result, and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -678,18 +678,43 @@ class LibraryRepository:
             select(DownloadTaskRow.status, func.count()).group_by(DownloadTaskRow.status)
         )
         counts = {str(status): int(count) for status, count in result.all()}
-        current = await self._session.execute(
-            select(DownloadTaskRow, LibraryTrackRow)
-            .join(LibraryTrackRow, LibraryTrackRow.id == DownloadTaskRow.library_track_id)
-            .where(DownloadTaskRow.status.in_(["resolving", "queued", "downloading", "retrying"]))
-            .order_by(DownloadTaskRow.created_at.asc())
-        )
-        task_pair = current.first()
-        task, track = task_pair if task_pair else (None, None)
+        task, track = await self._summary_active()
         return {
             "counts": counts,
             "active": self.task_payload(task, track) if task else None,
         }
+
+    async def _summary_active(self) -> tuple[DownloadTaskRow | None, LibraryTrackRow | None]:
+        """Task whose bytes should drive the progress UI.
+
+        A retrying task keeps the last byte count while it waits out
+        ``next_retry_at``, but nothing is transferring. Prefer the downloading
+        row with the latest heartbeat. Otherwise surface the oldest task that
+        is still queued, resolving, or waiting to retry.
+        """
+        joined = select(DownloadTaskRow, LibraryTrackRow).join(
+            LibraryTrackRow, LibraryTrackRow.id == DownloadTaskRow.library_track_id
+        )
+        downloading = await self._session.execute(
+            joined.where(DownloadTaskRow.status == "downloading")
+            .order_by(
+                case((DownloadTaskRow.heartbeat_at.is_(None), 1), else_=0),
+                DownloadTaskRow.heartbeat_at.desc(),
+            )
+            .limit(1)
+        )
+        pair = downloading.first()
+        if pair is not None:
+            return pair[0], pair[1]
+        waiting = await self._session.execute(
+            joined.where(DownloadTaskRow.status.in_(["resolving", "queued", "retrying"]))
+            .order_by(DownloadTaskRow.created_at.asc())
+            .limit(1)
+        )
+        pair = waiting.first()
+        if pair is None:
+            return None, None
+        return pair[0], pair[1]
 
     async def mark_asset_missing(self, asset: LibraryAssetRow) -> None:
         asset.status = "missing"
