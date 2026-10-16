@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
-import { getApiToken, setApiToken } from "../api";
 import { downloadErrorLabel } from "../lib/status-labels";
+import { useDownloadsStore } from "../stores/downloads";
 import { useHealthStore } from "../stores/health";
 import { usePreviewFailureStore } from "../stores/previewFailures";
 import { useThemeStore, type StyleThemeId } from "../stores/theme";
-import { useDownloadsStore } from "../stores/downloads";
 import AppIcon from "./AppIcon.vue";
 
 withDefaults(
@@ -24,9 +23,6 @@ const route = useRoute();
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
 const trigger = ref<HTMLButtonElement | null>(null);
-const apiToken = ref("");
-const tokenSaved = ref(false);
-let tokenSavedTimer = 0;
 
 const menuLabel = computed(() => {
   const count = previewFailures.unseenCount;
@@ -76,25 +72,9 @@ function chooseStyle(id: StyleThemeId) {
   theme.setStyleTheme(id);
 }
 
-function saveApiToken() {
-  setApiToken(apiToken.value);
-  apiToken.value = getApiToken();
-  tokenSaved.value = true;
-  window.clearTimeout(tokenSavedTimer);
-  tokenSavedTimer = window.setTimeout(() => {
-    tokenSaved.value = false;
-  }, 2000);
-  // 保存或轮换令牌后立即重试先前被鉴权拦截的读取。
-  void downloads.refreshSummary();
-  void downloads.loadLibrary();
-}
-
 function toggle() {
   open.value = !open.value;
   if (open.value) {
-    apiToken.value = getApiToken();
-    tokenSaved.value = false;
-    // 空闲时轮询已停止；打开菜单时刷新一次任务/曲库计数。
     void downloads.refreshSummary();
     if (!downloads.libraryLoaded) void downloads.loadLibrary();
   }
@@ -110,7 +90,6 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onDocKey);
-  window.clearTimeout(tokenSavedTimer);
   downloads.stopPolling();
 });
 </script>
@@ -135,7 +114,7 @@ onUnmounted(() => {
       @click.stop="toggle()"
     >
       <svg
-        v-if="variant === 'avatar' && !downloads.active"
+        v-if="variant === 'avatar'"
         viewBox="0 0 40 40"
         class="h-full w-full"
         aria-hidden="true"
@@ -156,11 +135,7 @@ onUnmounted(() => {
         <path d="M18.4 26.2c1.2 1.1 2.2 1.1 3.2 0" stroke="#a1624a" stroke-width="1.2" stroke-linecap="round" />
         <path d="M20 23.4v2.1" stroke="#c08457" stroke-width="1.1" stroke-linecap="round" />
       </svg>
-      <AppIcon v-else-if="!downloads.active" name="menu" :size="20" />
-      <svg v-else viewBox="0 0 36 36" class="h-7 w-7 -rotate-90" aria-hidden="true">
-        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-opacity=".18" stroke-width="3" />
-        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" :stroke-dasharray="`${downloads.percent * 0.8796} 87.96`" />
-      </svg>
+      <AppIcon v-else name="menu" :size="20" />
     </button>
     <span
       v-if="previewFailures.unseenCount"
@@ -192,13 +167,6 @@ onUnmounted(() => {
         <div class="min-w-0 flex-1">
           <div class="font-medium">下载失败</div>
           <div class="mt-1 truncate text-xs">{{ downloads.failureNotice.title || "未知歌曲" }}</div>
-          <div
-            v-if="downloads.fallbackPending[downloads.failureNotice.id]"
-            class="mt-1 text-xs"
-            aria-live="polite"
-          >
-            正在查找网盘链接…
-          </div>
           <a
             v-if="downloads.failureNotice.source_page_url"
             :href="downloads.failureNotice.source_page_url"
@@ -226,7 +194,7 @@ onUnmounted(() => {
       aria-label="配置"
     >
       <div class="flex h-11 items-center gap-2 px-2">
-        <span class="shrink-0 text-sm">外观</span>
+        <span class="shrink-0 text-sm font-medium">外观</span>
         <div
           class="relative ml-auto grid min-w-0 grid-cols-3 rounded-full bg-zinc-100 p-[3px] dark:bg-zinc-800"
           role="group"
@@ -238,8 +206,8 @@ onUnmounted(() => {
           />
           <button
             type="button"
-            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-xs"
-            :class="theme.preference === 'system' ? 'font-medium text-zinc-900 dark:text-white' : 'text-zinc-500 dark:text-zinc-400'"
+            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-sm font-medium"
+            :class="theme.preference === 'system' ? 'text-zinc-950 dark:text-white' : 'text-zinc-900 dark:text-zinc-100'"
             :aria-pressed="theme.preference === 'system'"
             @click="choose('system')"
           >
@@ -247,8 +215,8 @@ onUnmounted(() => {
           </button>
           <button
             type="button"
-            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-xs"
-            :class="theme.preference === 'light' ? 'font-medium text-zinc-900 dark:text-white' : 'text-zinc-500 dark:text-zinc-400'"
+            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-sm font-medium"
+            :class="theme.preference === 'light' ? 'text-zinc-950 dark:text-white' : 'text-zinc-900 dark:text-zinc-100'"
             :aria-pressed="theme.preference === 'light'"
             @click="choose('light')"
           >
@@ -256,8 +224,8 @@ onUnmounted(() => {
           </button>
           <button
             type="button"
-            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-xs"
-            :class="theme.preference === 'dark' ? 'font-medium text-zinc-900 dark:text-white' : 'text-zinc-500 dark:text-zinc-400'"
+            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-sm font-medium"
+            :class="theme.preference === 'dark' ? 'text-zinc-950 dark:text-white' : 'text-zinc-900 dark:text-zinc-100'"
             :aria-pressed="theme.preference === 'dark'"
             @click="choose('dark')"
           >
@@ -266,7 +234,7 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="flex h-11 items-center gap-2 px-2">
-        <span class="shrink-0 text-sm">主题</span>
+        <span class="shrink-0 text-sm font-medium">主题</span>
         <div
           class="relative ml-auto grid min-w-0 rounded-full bg-zinc-100 p-[3px] dark:bg-zinc-800"
           :style="{ gridTemplateColumns: `repeat(${theme.styleThemes.length}, minmax(0, 1fr))` }"
@@ -281,8 +249,8 @@ onUnmounted(() => {
             v-for="item in theme.styleThemes"
             :key="item.id"
             type="button"
-            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-xs"
-            :class="theme.styleTheme === item.id ? 'font-medium text-zinc-900 dark:text-white' : 'text-zinc-500 dark:text-zinc-400'"
+            class="relative z-10 h-8 min-w-[3rem] rounded-full px-2 text-sm font-medium"
+            :class="theme.styleTheme === item.id ? 'text-zinc-950 dark:text-white' : 'text-zinc-900 dark:text-zinc-100'"
             :aria-pressed="theme.styleTheme === item.id"
             @click="chooseStyle(item.id)"
           >
@@ -290,26 +258,6 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
-      <form class="flex h-11 items-center gap-2 px-2" @submit.prevent="saveApiToken">
-        <label class="shrink-0 text-sm" for="settings-api-token">令牌</label>
-        <input
-          id="settings-api-token"
-          v-model="apiToken"
-          type="password"
-          class="ml-auto h-8 w-28 min-w-0 rounded-lg bg-zinc-100 px-2 text-xs outline-none focus:ring-1 focus:ring-zinc-400 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:ring-white/20"
-          placeholder="API_TOKEN"
-          autocomplete="off"
-          title="填写服务端配置的 API_TOKEN；留空保存可清除本机令牌"
-          @input="tokenSaved = false"
-        />
-        <button
-          type="submit"
-          class="h-8 shrink-0 rounded-lg bg-zinc-100 px-2 text-xs hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
-          :aria-label="tokenSaved ? '已保存 API Token' : '保存 API Token'"
-        >
-          {{ tokenSaved ? "已保存" : "保存" }}
-        </button>
-      </form>
       <div class="mx-2 h-px bg-zinc-100 dark:bg-white/10" role="separator" />
       <RouterLink
         to="/library"
@@ -317,8 +265,8 @@ onUnmounted(() => {
         :class="route.name === 'library' ? 'bg-zinc-100 dark:bg-white/10' : ''"
         @click="open = false"
       >
-        <span class="shrink-0">音乐库</span>
-        <span class="ml-auto text-xs text-zinc-500 dark:text-zinc-400">
+        <span class="shrink-0 font-medium">音乐库</span>
+        <span class="ml-auto text-sm font-medium text-zinc-800 dark:text-zinc-200">
           {{ downloads.active ? `${downloads.percent}%` : `${downloads.assetCount} 首` }}
         </span>
         <AppIcon name="chevron-right" :size="15" class="text-zinc-500" />
@@ -329,7 +277,7 @@ onUnmounted(() => {
         :class="route.name === 'boards' ? 'bg-zinc-100 dark:bg-white/10' : ''"
         @click="open = false"
       >
-        <span class="shrink-0">榜单管理</span>
+        <span class="shrink-0 font-medium">榜单管理</span>
         <AppIcon name="chevron-right" :size="15" class="ml-auto text-zinc-500" />
       </RouterLink>
       <RouterLink
@@ -338,7 +286,7 @@ onUnmounted(() => {
         :class="route.name === 'health' ? 'bg-zinc-100 dark:bg-white/10' : ''"
         @click="open = false"
       >
-        <span class="shrink-0">状态</span>
+        <span class="shrink-0 font-medium">状态</span>
         <span class="ml-auto flex items-center gap-1.5">
           <span
             class="status-glow h-2 w-2 shrink-0"
@@ -351,7 +299,7 @@ onUnmounted(() => {
           >
             {{ previewFailures.unseenCount > 99 ? "99+" : previewFailures.unseenCount }}
           </span>
-          <span class="text-sm text-zinc-500 dark:text-zinc-400">{{ statusLabel }}</span>
+          <span class="text-sm font-medium text-zinc-800 dark:text-zinc-100">{{ statusLabel }}</span>
         </span>
         <AppIcon name="chevron-right" :size="15" class="text-zinc-500" />
       </RouterLink>

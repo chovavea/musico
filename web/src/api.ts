@@ -46,66 +46,11 @@ export function isAbortError(reason: unknown): boolean {
 }
 
 const REQUEST_TIMEOUT_MS = 15_000;
-// 下载兜底要在服务端串行读好几个页面（每个请求上限 FALLBACK_TIMEOUT_SEC），
-// 所以它拿到的超时必须比默认值宽松，否则浏览器先放弃、用户点了没有任何反应。
 const FALLBACK_RESOLVE_TIMEOUT_MS = 120_000;
-// 设置了 API_TOKEN 的部署要求写操作带令牌。令牌只存在本机浏览器里，由「配置」
-// 菜单填写；曲库列表、曲库文件和下载记录也要求令牌（后端按白名单放行榜单、
-// 搜索、试听这些公开读接口）。
-const API_TOKEN_STORAGE_KEY = "musico-api-token";
-// <audio src> / <a href> 这类媒体地址带不了请求头，令牌还要以同源 Cookie 的
-// 形式送过去；后端只在 GET/HEAD 上认它，写操作仍然必须带 X-API-Token。
-const API_TOKEN_COOKIE_KEY = "musico_api_token";
-const AUTH_ERROR_CODE = 40101;
-const AUTH_ERROR_MESSAGE = "请在「配置」中填写有效的 API Token";
 let activeFullSearch: AbortController | null = null;
-// localStorage 不可用（无痕模式 / 禁用存储）时，令牌只活在本页会话里。
-let sessionApiToken = "";
-
-export function getApiToken(): string {
-  try {
-    const stored = globalThis.localStorage?.getItem(API_TOKEN_STORAGE_KEY)?.trim();
-    if (stored) return stored;
-  } catch {
-    // 无痕模式或禁用存储：退回本页会话里的值。
-  }
-  return sessionApiToken;
-}
-
-/** 把已保存的令牌同步进 Cookie；应用启动和保存令牌时各调一次。 */
-export function syncApiTokenCookie(): void {
-  const doc = globalThis.document;
-  if (!doc) return;
-  const token = getApiToken();
-  const secure = globalThis.location?.protocol === "https:" ? "; Secure" : "";
-  doc.cookie = token
-    ? `${API_TOKEN_COOKIE_KEY}=${encodeURIComponent(token)}; path=/; SameSite=Strict${secure}`
-    : `${API_TOKEN_COOKIE_KEY}=; path=/; SameSite=Strict; Max-Age=0`;
-}
-
-export function setApiToken(value: string): void {
-  const trimmed = value.trim();
-  sessionApiToken = trimmed;
-  try {
-    if (trimmed) {
-      globalThis.localStorage?.setItem(API_TOKEN_STORAGE_KEY, trimmed);
-    } else {
-      globalThis.localStorage?.removeItem(API_TOKEN_STORAGE_KEY);
-    }
-  } catch {
-    // 无痕模式或禁用存储时，令牌只在本页会话里生效。
-  }
-  syncApiTokenCookie();
-}
 
 function requestHeaders(init?: RequestInit): Headers {
-  const headers = new Headers(init?.headers);
-  const method = (init?.method ?? "GET").toUpperCase();
-  const token = getApiToken();
-  if (token && method !== "GET" && method !== "HEAD") {
-    headers.set("X-API-Token", token);
-  }
-  return headers;
+  return new Headers(init?.headers);
 }
 
 type LinkedSignal = {
@@ -176,7 +121,6 @@ async function sendJson<T>(
     try {
       const envelope = JSON.parse(text) as Partial<Envelope<T>>;
       if (typeof envelope.code === "number") {
-        if (envelope.code === AUTH_ERROR_CODE) envelope.msg = AUTH_ERROR_MESSAGE;
         return envelope as Envelope<T>;
       }
     } catch {
@@ -351,10 +295,6 @@ export function retryDownload(id: string): Promise<Envelope<DownloadTask>> {
   return sendJson(`/api/v1/downloads/${encodeURIComponent(id)}/retry`, { method: "POST" });
 }
 
-/**
- * Link-out fallback for a failed download. The backend only reads pages; the
- * returned ``url`` is an external share page the caller navigates to.
- */
 export function resolveDownloadFallback(id: string): Promise<Envelope<FallbackResolution>> {
   return sendJson(
     `/api/v1/downloads/${encodeURIComponent(id)}/fallback`,

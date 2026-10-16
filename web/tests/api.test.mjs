@@ -4,13 +4,10 @@ import {
   ApiError,
   cancelFullSearch,
   createDownload,
-  getApiToken,
   isAbortError,
   listBoards,
   resolveDownloadFallback,
   searchTracks,
-  setApiToken,
-  syncApiTokenCookie,
 } from "../src/api.ts";
 
 const originalFetch = globalThis.fetch;
@@ -138,32 +135,7 @@ test("reports HTTP and malformed response details", async () => {
   });
 });
 
-test("write requests carry the stored API token while reads never do", async () => {
-  globalThis.localStorage = stubStorage();
-  const calls = [];
-  globalThis.fetch = async (url, init) => {
-    calls.push({ url: String(url), headers: new Headers(init?.headers) });
-    return new Response(JSON.stringify({ code: 0, data: { state: "queued" }, msg: "" }), {
-      status: 202,
-    });
-  };
-  setApiToken("stored-token");
-
-  await createDownload({
-    platform: "qqmusic",
-    external_id: "qq-1",
-    title: "晴天",
-    artist: "周杰伦",
-  });
-  await listBoards();
-
-  assert.equal(getApiToken(), "stored-token");
-  assert.equal(calls[0].headers.get("X-API-Token"), "stored-token");
-  assert.equal(calls[1].headers.get("X-API-Token"), null);
-});
-
-test("clearing the API token stops sending the header", async () => {
-  globalThis.localStorage = stubStorage();
+test("download requests do not send an API token", async () => {
   const calls = [];
   globalThis.fetch = async (_url, init) => {
     calls.push(new Headers(init?.headers));
@@ -171,8 +143,6 @@ test("clearing the API token stops sending the header", async () => {
       status: 202,
     });
   };
-  setApiToken("stored-token");
-  setApiToken("  ");
 
   await createDownload({
     platform: "qqmusic",
@@ -181,55 +151,7 @@ test("clearing the API token stops sending the header", async () => {
     artist: "周杰伦",
   });
 
-  assert.equal(getApiToken(), "");
   assert.equal(calls[0].get("X-API-Token"), null);
-});
-
-test("the token gate 401 explains where to set the token", async () => {
-  globalThis.localStorage = stubStorage();
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({
-        code: 40101,
-        data: null,
-        msg: "unauthorized: missing or invalid API token",
-      }),
-      { status: 401 },
-    );
-
-  const response = await createDownload({
-    platform: "qqmusic",
-    external_id: "qq-1",
-    title: "晴天",
-    artist: "周杰伦",
-  });
-
-  assert.equal(response.code, 40101);
-  assert.match(response.msg, /配置/);
-  assert.doesNotMatch(response.msg, /unauthorized/);
-});
-
-test("the stored token is mirrored into a same-site cookie for media URLs", () => {
-  globalThis.localStorage = stubStorage();
-  const cookies = [];
-  globalThis.document = {
-    set cookie(value) {
-      cookies.push(value);
-    },
-    get cookie() {
-      return "";
-    },
-  };
-
-  setApiToken("stored-token");
-  assert.match(cookies.at(-1), /^musico_api_token=stored-token; path=\/; SameSite=Strict$/);
-
-  // 应用启动时补一次 Cookie：会话级 Cookie 会因为重启浏览器消失。
-  syncApiTokenCookie();
-  assert.equal(cookies.at(-1), cookies.at(-2));
-
-  setApiToken("  ");
-  assert.match(cookies.at(-1), /^musico_api_token=; path=\/; SameSite=Strict; Max-Age=0$/);
 });
 
 test("the download fallback is given far more than the default request timeout", async () => {
