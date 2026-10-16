@@ -84,3 +84,10 @@ export function loadQQOfficialPlayer(): Promise<QQOfficialPlayer> {
 export function pauseQQOfficialPlayer(): void {
   instance?.pause("web");
 }
+
+/** The SDK keeps its media element on a private field and creates it lazily. */
+export function qqOfficialAudio(): HTMLAudioElement | null {
+  const audio = (instance as { __?: { audio?: HTMLAudioElement | null } } | null)?.__?.audio;
+  if (!audio || typeof audio.play !== "function") return null;
+  return audio;
+}

@@ -637,6 +637,18 @@ html[data-theme="glaze"] .gz-main .ring-zinc-300 {
   --tw-ring-color: var(--gz-line);
 }
 
+.gz-player .repeat-mode {
+  color: var(--gz-muted);
+}
+
+.gz-player .repeat-mode:hover {
+  background: var(--gz-chip);
+}
+
+.gz-player .repeat-mode.is-on {
+  color: var(--gz-accent);
+}
+
 .gz-ghost {
   display: grid;
   height: 36px;
@@ -686,6 +698,12 @@ html[data-theme="glaze"] .gz-main .ring-zinc-300 {
 .gz-ghost.is-on {
   color: var(--gz-text);
   background: var(--gz-chip);
+}
+
+.gz-ghost.is-busy,
+.gz-ghost.is-busy:disabled {
+  color: var(--gz-text);
+  opacity: 1;
 }
 
 .gz-ghost:disabled {

@@ -3,6 +3,7 @@ import {
   getQQOfficialPlayer,
   loadQQOfficialPlayer,
   pauseQQOfficialPlayer,
+  qqOfficialAudio,
   type QQOfficialEvent,
   type QQOfficialPlayer,
 } from "../lib/qq-official-player";
@@ -100,6 +101,7 @@ export const usePlayerStore = defineStore("player", {
     advanceOnFail: false,
     repeatMode: readRepeatMode() as RepeatMode,
     officialTimer: null as ReturnType<typeof setTimeout> | null,
+    officialKickTimer: null as ReturnType<typeof setTimeout> | null,
     streamRetries: 0,
     streamRetryTimer: null as ReturnType<typeof setTimeout> | null,
   }),
@@ -137,8 +139,7 @@ export const usePlayerStore = defineStore("player", {
         if (!this.current || this.usingOfficial || !this.wantsPlayback) {
           return;
         }
-        // 本地曲库走 /library/{asset_id}/stream，不包含 external_id，
-        // 因此按 streamUrl 生成的完整源地址匹配，避免错误被静默吞掉。
+        // 按 streamUrl 生成的完整源地址匹配，避免过期播放器的错误被静默吞掉。
         if (!sameAudioSource(audio, this.current, this.downloadOnly)) {
           return;
         }
@@ -184,6 +185,40 @@ export const usePlayerStore = defineStore("player", {
         this.officialTimer = null;
       }
     },
+    clearOfficialKick() {
+      if (this.officialKickTimer !== null) {
+        clearTimeout(this.officialKickTimer);
+        this.officialKickTimer = null;
+      }
+    },
+    // Desktop QMplayer sets a new src and load() without audio.play(). The
+    // autoplay attribute only starts the first few songs; later ones stay
+    // silent and never emit ended, so the queue stops. play() on that same
+    // element is what keeps sequential playback going.
+    armOfficialKick(playbackId: number) {
+      this.clearOfficialKick();
+      let attempts = 0;
+      const kick = () => {
+        this.officialKickTimer = null;
+        if (this.playbackId !== playbackId || !this.wantsPlayback || !this.usingOfficial) return;
+        const audio = qqOfficialAudio();
+        const mid = getQQOfficialPlayer()?.data?.song?.mid;
+        const current = this.current;
+        if (audio?.src && current && mid === current.external_id) {
+          if (!audio.paused) return;
+          const pending = audio.play();
+          void Promise.resolve(pending).catch((error: unknown) => {
+            if (this.playbackId !== playbackId || !this.wantsPlayback || !this.usingOfficial) return;
+            if (error instanceof DOMException && error.name === "AbortError") return;
+          });
+          return;
+        }
+        attempts += 1;
+        if (attempts >= 50) return;
+        this.officialKickTimer = setTimeout(kick, 100);
+      };
+      kick();
+    },
     clearStreamRetry() {
       if (this.streamRetryTimer !== null) {
         clearTimeout(this.streamRetryTimer);
@@ -226,6 +261,7 @@ export const usePlayerStore = defineStore("player", {
           return;
         }
         this.clearOfficialTimer();
+        this.clearOfficialKick();
         this.loading = false;
         this.loadState = "ready";
         this.playing = true;
@@ -301,6 +337,7 @@ export const usePlayerStore = defineStore("player", {
     },
     start(item: RankItem) {
       this.clearOfficialTimer();
+      this.clearOfficialKick();
       this.clearStreamRetry();
       this.playbackId += 1;
       this.failed = false;
@@ -431,6 +468,7 @@ export const usePlayerStore = defineStore("player", {
         this.bindOfficial(official);
         this.officialPlaybackId = playbackId;
         official.play(item.external_id, { target: "web" });
+        this.armOfficialKick(playbackId);
       } catch {
         if (this.playbackId === playbackId) this.startFallback();
       }
@@ -439,6 +477,7 @@ export const usePlayerStore = defineStore("player", {
       const cancelledLoading = this.loading || this.loadState === "loading";
       this.playbackId += 1;
       this.clearOfficialTimer();
+      this.clearOfficialKick();
       this.clearStreamRetry();
       this.wantsPlayback = false;
       this.loading = false;

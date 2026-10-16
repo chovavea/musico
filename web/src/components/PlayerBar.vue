@@ -8,6 +8,7 @@ import { useThemeStore } from "../stores/theme";
 import AppIcon from "./AppIcon.vue";
 import CoverImage from "./CoverImage.vue";
 import LyricsPanel from "./LyricsPanel.vue";
+import RepeatModeButton from "./RepeatModeButton.vue";
 
 const player = usePlayerStore();
 const theme = useThemeStore();
@@ -35,12 +36,6 @@ const barText = computed(() => {
 const coverBackdrop = computed(() =>
   lyricsOpen.value ? coverImageUrl(player.current?.cover_url, 500) : null,
 );
-const repeatLabel = computed(() => {
-  if (player.repeatMode === "one") return "单曲循环";
-  if (player.repeatMode === "all") return "列表循环";
-  return "顺序播放";
-});
-const repeatIcon = computed(() => (player.repeatMode === "one" ? "repeat-one" : "repeat"));
 const toggleLabel = computed(() => {
   if (player.loading) return "取消加载";
   if (player.failed) return "重试播放";
@@ -219,17 +214,7 @@ function onSeekKey(event: KeyboardEvent) {
           >
             <AppIcon name="chevron-right" :size="20" />
           </button>
-          <button
-            type="button"
-            class="gz-ghost gz-player-skip"
-            :class="player.repeatMode !== 'off' ? 'is-on' : ''"
-            :aria-label="repeatLabel"
-            :aria-pressed="player.repeatMode !== 'off'"
-            :title="repeatLabel"
-            @click="player.cycleRepeat()"
-          >
-            <AppIcon :name="repeatIcon" :size="18" />
-          </button>
+          <RepeatModeButton compact />
         </div>
       </div>
       <div v-if="!lyricsOpen" class="gz-player-extra">
@@ -336,17 +321,7 @@ function onSeekKey(event: KeyboardEvent) {
             >
               <AppIcon name="chevron-right" :size="20" />
             </button>
-            <button
-              type="button"
-              class="grid h-11 w-11 place-items-center rounded-full text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/10"
-              :class="player.repeatMode !== 'off' ? 'text-zinc-900 ring-1 ring-zinc-300 dark:text-white dark:ring-white/20' : ''"
-              :aria-label="repeatLabel"
-              :aria-pressed="player.repeatMode !== 'off'"
-              :title="repeatLabel"
-              @click="player.cycleRepeat()"
-            >
-              <AppIcon :name="repeatIcon" :size="18" />
-            </button>
+            <RepeatModeButton />
           </div>
         </div>
 
