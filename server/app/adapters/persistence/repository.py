@@ -151,7 +151,8 @@ class ChartRepository:
 
     async def _upsert_song(self, platform: str, item: RawRankItem) -> str:
         # Two boards on the same platform collect at once and often share a song.
-        # A select-then-insert loses that race and aborts the snapshot.
+        # A select-then-insert loses that race and aborts the snapshot. Overlapping
+        # upserts can still deadlock; CollectService serializes and retries that write.
         dialect = self._session.get_bind().dialect.name
         insert = pg_insert if dialect == "postgresql" else sqlite_insert
         insert_stmt = insert(PlatformSongRow).values(

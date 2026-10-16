@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
 import structlog
+from psycopg.errors import DeadlockDetected
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -13,6 +15,11 @@ from app.plugins._registry import PluginRegistry
 from app.settings import Settings
 
 log = structlog.get_logger(__name__)
+
+# One victim is aborted; the other transaction usually commits a moment later.
+# A few attempts cover that window without marking the board failed.
+_SNAPSHOT_ATTEMPTS = 3
+_DEADLOCK_BACKOFF_SEC = 0.05
 
 
 class CollectService:
@@ -27,6 +34,9 @@ class CollectService:
         self._session_factory = session_factory
         self._settings = settings
         self.latest_cache = cache if cache is not None else {}
+        # qq_hot and qq_douyin upsert the same platform_song rows. Serializing
+        # the write per platform keeps those locks from forming a deadlock.
+        self._snapshot_locks: dict[str, asyncio.Lock] = {}
 
     async def collect_board(self, spec: BoardSpec, *, preserve_movement: bool = False) -> None:
         started = time.perf_counter()
@@ -54,14 +64,10 @@ class CollectService:
             if not items:
                 raise ValueError("no valid rank items")
             # Official preview URLs expire; resolve on play via /preview/.../stream.
-            async with self._session_factory() as session:
-                repo = ChartRepository(session)
-                await repo.persist_snapshot(spec, items, preserve_movement=preserve_movement)
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                await repo.record_health(
-                    spec.id, ok=True, latency_ms=latency_ms, item_count=len(items), error=None
+            async with self._snapshot_lock(spec.platform):
+                await self._commit_snapshot(
+                    spec, items, preserve_movement=preserve_movement, started=started
                 )
-                await session.commit()
             self.latest_cache.pop(f"latest:{spec.id}", None)
             log.info(
                 "collect_end",
@@ -79,6 +85,43 @@ class CollectService:
                 item_count=None,
                 error=str(exc),
             )
+
+    def _snapshot_lock(self, platform: str) -> asyncio.Lock:
+        lock = self._snapshot_locks.get(platform)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._snapshot_locks[platform] = lock
+        return lock
+
+    async def _commit_snapshot(
+        self,
+        spec: BoardSpec,
+        items: list[RawRankItem],
+        *,
+        preserve_movement: bool,
+        started: float,
+    ) -> None:
+        for attempt in range(1, _SNAPSHOT_ATTEMPTS + 1):
+            try:
+                async with self._session_factory() as session:
+                    repo = ChartRepository(session)
+                    await repo.persist_snapshot(spec, items, preserve_movement=preserve_movement)
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    await repo.record_health(
+                        spec.id, ok=True, latency_ms=latency_ms, item_count=len(items), error=None
+                    )
+                    await session.commit()
+                return
+            except Exception as exc:
+                if attempt == _SNAPSHOT_ATTEMPTS or not _is_deadlock(exc):
+                    raise
+                log.warning(
+                    "collect_deadlock_retry",
+                    platform=spec.platform,
+                    board_id=spec.id,
+                    attempt=attempt,
+                )
+                await asyncio.sleep(_DEADLOCK_BACKOFF_SEC * attempt)
 
     async def _health(
         self,
@@ -98,6 +141,24 @@ class CollectService:
                 await session.commit()
         except Exception:
             log.exception("health_write_failed", board_id=board_id)
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, DeadlockDetected):
+            return True
+        if getattr(current, "sqlstate", None) == "40P01":
+            return True
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException) and orig is not current:
+            current = orig
+            continue
+        cause = current.__cause__
+        current = cause if isinstance(cause, BaseException) and cause is not current else None
+    return False
 
 
 def _validate_items(raw_items: list[RawRankItem], board_id: str) -> list[RawRankItem]:

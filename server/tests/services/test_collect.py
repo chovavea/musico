@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -8,8 +9,10 @@ from app.adapters.persistence.models import Base, BoardLatestRow, PlatformSongRo
 from app.adapters.persistence.repository import ChartRepository, _remembered_previous
 from app.domain.models import BoardSpec, RawRankItem
 from app.plugins._registry import PluginRecord, PluginRegistry
-from app.services.collect import CollectService
+from app.services.collect import CollectService, _is_deadlock
 from app.settings import Settings
+from psycopg.errors import DeadlockDetected
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
@@ -278,3 +281,217 @@ async def test_missing_extra_skips_and_records_health(
     assert rows[0].consecutive_failures == 1
     assert rows[0].last_error is not None
     assert "top_id" in rows[0].last_error
+
+
+def _spec(board_id: str, platform: str) -> BoardSpec:
+    return BoardSpec(
+        id=board_id,
+        platform=platform,
+        name=board_id,
+        type="hot",
+        interval_sec=1800,
+        extra={"top_id": 26},
+    )
+
+
+def _registry(*charts: tuple[str, _FakeChart]) -> PluginRegistry:
+    return PluginRegistry(
+        plugins={
+            platform: PluginRecord(
+                plugin_id=platform,
+                name=platform,
+                capabilities=["chart"],
+                config_schema={"required": ["top_id"], "types": {"top_id": "int"}},
+                chart=chart,
+            )
+            for platform, chart in charts
+        }
+    )
+
+
+def _deadlock() -> OperationalError:
+    return OperationalError(
+        "INSERT INTO platform_song",
+        {},
+        DeadlockDetected("deadlock detected"),
+    )
+
+
+def test_deadlock_detector_follows_the_sqlalchemy_wrapper() -> None:
+    assert _is_deadlock(_deadlock())
+    assert not _is_deadlock(ValueError("no valid rank items"))
+
+
+@pytest.mark.asyncio
+async def test_deadlock_is_retried_without_another_fetch(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec("qq_douyin", "qqmusic")
+    async with session_factory() as session:
+        await ChartRepository(session).upsert_catalog([spec], {"qqmusic": "QQ音乐"})
+        await session.commit()
+    chart = _FakeChart([[_item(1, "shared", "晴天")]])
+    calls = {"persist": 0}
+    original = ChartRepository.persist_snapshot
+
+    async def flaky(
+        self: ChartRepository,
+        board: BoardSpec,
+        items: list[RawRankItem],
+        *,
+        preserve_movement: bool = False,
+    ) -> str:
+        calls["persist"] += 1
+        if calls["persist"] == 1:
+            raise _deadlock()
+        return await original(self, board, items, preserve_movement=preserve_movement)
+
+    monkeypatch.setattr(ChartRepository, "persist_snapshot", flaky)
+    service = CollectService(_registry(("qqmusic", chart)), session_factory, Settings())
+    await service.collect_board(spec)
+
+    assert calls["persist"] == 2
+    assert chart._batches == []
+    async with session_factory() as session:
+        rows = await ChartRepository(session).list_health()
+        payload = await ChartRepository(session).get_latest_payload("qq_douyin")
+    assert rows[0].consecutive_failures == 0
+    assert rows[0].last_error is None
+    assert payload is not None
+    assert payload["items"][0]["external_id"] == "shared"
+
+
+@pytest.mark.asyncio
+async def test_deadlock_is_recorded_once_when_retries_are_exhausted(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec("qq_douyin", "qqmusic")
+    async with session_factory() as session:
+        await ChartRepository(session).upsert_catalog([spec], {"qqmusic": "QQ音乐"})
+        await session.commit()
+    chart = _FakeChart([[_item(1, "shared", "晴天")]])
+    calls = {"persist": 0}
+
+    async def always_deadlock(
+        self: ChartRepository,
+        board: BoardSpec,
+        items: list[RawRankItem],
+        *,
+        preserve_movement: bool = False,
+    ) -> str:
+        _ = (self, board, items, preserve_movement)
+        calls["persist"] += 1
+        raise _deadlock()
+
+    monkeypatch.setattr(ChartRepository, "persist_snapshot", always_deadlock)
+    service = CollectService(_registry(("qqmusic", chart)), session_factory, Settings())
+    await service.collect_board(spec)
+
+    assert calls["persist"] == 3
+    assert chart._batches == []
+    async with session_factory() as session:
+        rows = await ChartRepository(session).list_health()
+    assert rows[0].consecutive_failures == 1
+    assert rows[0].last_error is not None
+    assert "deadlock detected" in rows[0].last_error
+
+
+@pytest.mark.asyncio
+async def test_same_platform_snapshot_writes_do_not_overlap(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with session_factory() as session:
+        await ChartRepository(session).upsert_catalog(
+            [_spec("qq_douyin", "qqmusic")],
+            {"qqmusic": "QQ音乐"},
+        )
+        await session.commit()
+    entered: list[str] = []
+    hot_inside = asyncio.Event()
+    release = asyncio.Event()
+    original = ChartRepository.persist_snapshot
+
+    async def tracked(
+        self: ChartRepository,
+        board: BoardSpec,
+        items: list[RawRankItem],
+        *,
+        preserve_movement: bool = False,
+    ) -> str:
+        entered.append(board.id)
+        if board.id == "qq_hot":
+            hot_inside.set()
+            await release.wait()
+        return await original(self, board, items, preserve_movement=preserve_movement)
+
+    monkeypatch.setattr(ChartRepository, "persist_snapshot", tracked)
+    chart = _FakeChart(
+        [
+            [_item(1, "hot", "晴天")],
+            [_item(1, "douyin", "七里香")],
+        ]
+    )
+    service = CollectService(_registry(("qqmusic", chart)), session_factory, Settings())
+    hot_task = asyncio.create_task(service.collect_board(_spec("qq_hot", "qqmusic")))
+    await hot_inside.wait()
+    douyin_task = asyncio.create_task(service.collect_board(_spec("qq_douyin", "qqmusic")))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert entered == ["qq_hot"]
+    release.set()
+    await hot_task
+    await douyin_task
+    assert entered == ["qq_hot", "qq_douyin"]
+
+
+@pytest.mark.asyncio
+async def test_other_platforms_can_write_snapshots_together(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with session_factory() as session:
+        await ChartRepository(session).upsert_catalog(
+            [_spec("netease_hot", "netease")],
+            {"netease": "网易云"},
+        )
+        await session.commit()
+    entered: list[str] = []
+    second_entered = asyncio.Event()
+    write_lock = asyncio.Lock()
+    original = ChartRepository.persist_snapshot
+
+    async def tracked(
+        self: ChartRepository,
+        board: BoardSpec,
+        items: list[RawRankItem],
+        *,
+        preserve_movement: bool = False,
+    ) -> str:
+        entered.append(board.id)
+        if len(entered) == 1:
+            await second_entered.wait()
+        else:
+            second_entered.set()
+        async with write_lock:
+            return await original(self, board, items, preserve_movement=preserve_movement)
+
+    monkeypatch.setattr(ChartRepository, "persist_snapshot", tracked)
+    service = CollectService(
+        _registry(
+            ("qqmusic", _FakeChart([[_item(1, "qq", "晴天")]])),
+            ("netease", _FakeChart([[_item(1, "wy", "七里香")]])),
+        ),
+        session_factory,
+        Settings(),
+    )
+    await asyncio.wait_for(
+        asyncio.gather(
+            service.collect_board(_spec("qq_hot", "qqmusic")),
+            service.collect_board(_spec("netease_hot", "netease")),
+        ),
+        timeout=1,
+    )
+    assert set(entered) == {"qq_hot", "netease_hot"}
